@@ -23,3 +23,9 @@ docs_confluence/
 
 # Hermes agent scratch (plans, local notes)
 .hermes/
+
+# Local scratch / IDE files
+.spyproject/
+.claude/
+optimize_karaoke_credit_usage
+scripts/tst-gemi.py.py

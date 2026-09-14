@@ -232,12 +232,13 @@ def line_weight(line: str) -> float:
     text = (line or "").strip()
     if not text:
         return 0.0
-    # Add pause weight for commas, dashes, semicolons, and periods.
+    # Add pause weight for commas, dashes, semicolons, periods, and exclamation marks.
     pause_bonus = (
         text.count(",") * 0.4
         + text.count("—") * 0.6
         + text.count(";") * 0.5
         + text.count(".") * 0.7
+        + text.count("!") * 0.8
     )
     return max(1.0, len(_WORD.findall(text.lower())) + len(text) / 12.0 + pause_bonus)
 

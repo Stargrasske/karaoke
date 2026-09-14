@@ -66,6 +66,272 @@ This reference is generated from Python docstrings with `mkdocstrings`.
 
 ::: karaoke.beats
 
+
+## Admin & Operator TUI
+
+::: karaoke.admin_tui
+
+## Audio Key & Tempo Analysis
+
+::: karaoke.analyze
+
+## FastAPI Library REST API
+
+::: karaoke.api
+
+## FastAPI Client Library
+
+::: karaoke.api_client
+
+## Audio Feature Vector Embeddings
+
+::: karaoke.audio_vector
+
+## Automated Track Classification
+
+::: karaoke.autoclassify
+
+## Collection Metadata Backfill
+
+::: karaoke.backfill
+
+## Backfill Queue Runner
+
+::: karaoke.backfill_runner
+
+## Large Terminal Text Rendering
+
+::: karaoke.bigtext
+
+## Interactive Library Browser TUI
+
+::: karaoke.browse
+
+## Closed Caption & Subtitle Synchronization
+
+::: karaoke.caption_sync
+
+## Celery Task Queue & Orchestration
+
+::: karaoke.celery_app
+
+## CLAP Audio Genre Vectors
+
+::: karaoke.clap_vector
+
+## Artwork Storage & Caching
+
+::: karaoke.cover_store
+
+## Album Artwork Fetching & Embedding
+
+::: karaoke.coverart
+
+## Host Playback Control API
+
+::: karaoke.ctrl_api
+
+## Audio Fingerprinting & Recognition
+
+::: karaoke.detect
+
+## Event Hooks & Pub/Sub System
+
+::: karaoke.events
+
+## Streaming & Local Source Resolution
+
+::: karaoke.find_sources
+
+## Collection & Directory Scanning
+
+::: karaoke.folder_scan
+
+## Genre Tagging & Classification
+
+::: karaoke.genre
+
+## OpenSearch & SQLite Search Engine
+
+::: karaoke.librarysearch
+
+## Library & Playback Statistics
+
+::: karaoke.librarystats
+
+## Process Synchronization & File Locking
+
+::: karaoke.lockfile
+
+## Structured Logging & Diagnostics
+
+::: karaoke.logger
+
+## Lyric Alignment & Timings
+
+::: karaoke.lyric_align
+
+## Language Detection for Lyrics
+
+::: karaoke.lyric_language
+
+## Mood-Based Visual Artwork
+
+::: karaoke.moodart
+
+## Mood Video & Animation Framing
+
+::: karaoke.moodframe
+
+## Musical Scales, Keys, and Theory Helpers
+
+::: karaoke.musictheory
+
+## Follow-Mode Playback Controller
+
+::: karaoke.player_follow
+
+## Browser Kiosk & Media Player Launcher
+
+::: karaoke.player_open
+
+## Synced Playback State Coordination
+
+::: karaoke.player_sync
+
+## MPRIS / Media Controller Client
+
+::: karaoke.playerctl
+
+## Post-Processing Task Queue
+
+::: karaoke.postprocess_queue
+
+## Worker & Pipeline Status Reporting
+
+::: karaoke.postprocess_status
+
+## Background Post-Processing Worker
+
+::: karaoke.postprocess_worker
+
+## Smart Queue & Recommendation Engine
+
+::: karaoke.queue_suggest
+
+## Radio Session Recording & Library Import
+
+::: karaoke.radio_pipeline
+
+## Live Audio Capture & PipeWire Recording
+
+::: karaoke.recorder
+
+## Audio Segment Processing for Recordings
+
+::: karaoke.recording_audio
+
+## FLAC Slicing & Export for Recordings
+
+::: karaoke.recording_slice
+
+## Recording Cut & Transcode Worker
+
+::: karaoke.recording_worker
+
+## Audio Sampling & Quick Key/BPM Inspection
+
+::: karaoke.sample_audio
+
+## Silence Trimming & Audio Preprocessing
+
+::: karaoke.silence
+
+## Smart Playlists & Query Filters
+
+::: karaoke.smartlist
+
+## Source Priority & Selection Rules
+
+::: karaoke.source_select
+
+## Spotify Playlist Sync & Management
+
+::: karaoke.spotify_playlist
+
+## Staged Downloads & Pre-Ingestion
+
+::: karaoke.stage_sources
+
+## Staging Directory & File State
+
+::: karaoke.staging
+
+## Staging Control API
+
+::: karaoke.staging_api
+
+## Celery / Background Tasks Definition
+
+::: karaoke.tasks
+
+## Tone Analysis & Mood Scoring
+
+::: karaoke.tone
+
+## Multi-Modal Track Analysis Coordinator
+
+::: karaoke.track_analysis
+
+## Karaoke Terminal User Interface
+
+::: karaoke.tui
+
+## LRC Word-Timing Upgrade Engine
+
+::: karaoke.upgrade_timings
+
+## OpenSearch Vector Indexing & KNN Search
+
+::: karaoke.vector_index
+
+## Rich Terminal Visualizations & Meters
+
+::: karaoke.visuals
+
+## Web Interface & HTML Endpoints
+
+::: karaoke.web
+
+## Whisper Transcript Post-Processing
+
+::: karaoke.whisper_clean
+
+## YouTube Playback & Cache Resolution
+
+::: karaoke.youtube
+
+## YouTube Music API Client
+
+::: karaoke.ytmusic_client
+
+## YouTube Music Synced Lyrics Fetcher
+
+::: karaoke.ytmusic_lyrics
+
+## YouTube Music Playlist Synchronization
+
+::: karaoke.ytmusic_playlist
+
+
+## Artist Classifier
+
+::: karaoke.artist_classifier
+
+## Stage View
+
+::: karaoke.stage_view
+
 ## `GET /api/workers/status`
 
 Celery worker, queue and Flower dashboard status. Allows monitoring the

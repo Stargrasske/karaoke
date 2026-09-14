@@ -110,6 +110,8 @@ def clean_search_term(text: str) -> str:
 class YTMusicClient:
     """Client for interacting with YouTube Music via ytmusicapi."""
 
+    is_authenticated: bool = False
+
     def __init__(self, auth: str | Path | dict[str, Any] | None = None) -> None:
         from ytmusicapi import YTMusic
 
@@ -186,6 +188,15 @@ class YTMusicClient:
         except Exception as exc:
             log.error("Failed to get playlist %s from YouTube Music: %s", playlist_id, exc)
             raise YTMusicError(f"Failed to fetch playlist {playlist_id}: {exc}") from exc
+
+    def delete_playlist(self, playlist_id: str) -> dict[str, Any] | str:
+        """Delete a YouTube Music playlist by ID."""
+        self.require_auth()
+        try:
+            return self.api.delete_playlist(playlistId=playlist_id)
+        except Exception as exc:
+            log.error("Failed to delete playlist %s from YouTube Music: %s", playlist_id, exc)
+            raise YTMusicError(f"Failed to delete playlist: {exc}") from exc
 
     def get_playlist_tracks(self, playlist_id: str, limit: int = 200) -> list[dict[str, Any]]:
         """Fetch simplified track list from a playlist."""

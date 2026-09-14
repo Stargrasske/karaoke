@@ -6,6 +6,7 @@ whole TUI stack just to spawn ``xdg-open``.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -16,7 +17,7 @@ CDP_PORT = 9222
 CDP_URL = f"http://localhost:{CDP_PORT}/json"
 
 
-def _cdp_page_socket(timeout: float = 1.0) -> "str | None":
+def _cdp_page_socket(timeout: float = 0.25) -> "str | None":
     """WebSocket URL of the kiosk browser's first page target, or None."""
     import json
     import urllib.request
@@ -60,6 +61,10 @@ class _CdpChannel:
     other callers only as far as their own timeouts.
     """
 
+    # Cooldown in seconds after a failure before attempting to contact CDP again.
+    # Prevents 5-per-second polling loops from locking up on a dead/hanging socket.
+    COOLDOWN = 3.0
+
     def __init__(self) -> None:
         import itertools
         import threading
@@ -70,6 +75,7 @@ class _CdpChannel:
         self._ws = None
         self._send_lock = None
         self._ids = itertools.count(1)
+        self._failed_until = 0.0
 
     # -- the loop thread ---------------------------------------------------
 
@@ -107,11 +113,15 @@ class _CdpChannel:
                 except Exception:
                     self._ws = None
 
-        url = _cdp_page_socket()
+        url = _cdp_page_socket(timeout=0.25)
         if not url:
             return None
-        self._ws = await websockets.connect(url)
-        return self._ws
+        try:
+            self._ws = await websockets.connect(url)
+            return self._ws
+        except Exception:
+            self._ws = None
+            return None
 
     async def _request(self, method: str, params: dict, timeout: float):
         import asyncio
@@ -120,28 +130,36 @@ class _CdpChannel:
         if self._send_lock is None:
             self._send_lock = asyncio.Lock()
 
-        async with self._send_lock:
-            ws = await self._connection()
-            if ws is None:
-                return None
-            request_id = next(self._ids)
-            await ws.send(json.dumps(
-                {"id": request_id, "method": method, "params": params}))
-            deadline = asyncio.get_running_loop().time() + timeout
-            while True:
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    return None
-                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                message = json.loads(raw)
-                # CDP interleaves unsolicited events with replies; only a
-                # matching id answers this call.
-                if message.get("id") == request_id:
-                    return message
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._send_lock:
+                    ws = await self._connection()
+                    if ws is None:
+                        return None
+                    request_id = next(self._ids)
+                    await ws.send(json.dumps(
+                        {"id": request_id, "method": method, "params": params}))
+                    deadline = asyncio.get_running_loop().time() + timeout
+                    while True:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            return None
+                        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                        message = json.loads(raw)
+                        # CDP interleaves unsolicited events with replies; only a
+                        # matching id answers this call.
+                        if message.get("id") == request_id:
+                            return message
+        except Exception:
+            return None
 
-    def send(self, method: str, params: dict, timeout: float = 2.0):
+    def send(self, method: str, params: dict, timeout: float = 2.0, *, force: bool = False):
         """Run one command, or return None."""
         import asyncio
+        import time
+
+        if not force and time.monotonic() < self._failed_until:
+            return None
 
         try:
             import websockets  # noqa: F401
@@ -152,11 +170,17 @@ class _CdpChannel:
         loop = self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(
             self._request(method, params, timeout), loop)
+        wait_timeout = timeout + min(0.25, max(0.05, timeout * 0.1))
         try:
-            return future.result(timeout=timeout + 1.5)
+            res = future.result(timeout=wait_timeout)
+            if res is not None:
+                self._failed_until = 0.0
+            else:
+                self._failed_until = time.monotonic() + self.COOLDOWN
+            return res
         except Exception:
-            # Cancelling matters: it releases the lock and drops the socket
-            # rather than leaving the next caller behind a dead request.
+            # Trip cooldown so repeated polling does not freeze the caller.
+            self._failed_until = time.monotonic() + self.COOLDOWN
             future.cancel()
             self._drop()
             log.debug("CDP %s failed", method, exc_info=True)
@@ -191,9 +215,32 @@ class _CdpChannel:
 _CHANNEL = _CdpChannel()
 
 
-def _cdp_send(method: str, params: dict, *, timeout: float = 2.0):
+def _is_browser_url(url: str, kind: str | None = None) -> bool:
+    """Whether falling back to the desktop default browser would spawn clutter.
+
+    Playback should go through the dedicated kiosk/CDP browser. If CDP is slow
+    or temporarily unavailable, using ``xdg-open`` launches the user's normal
+    browser profile as a stray window, which is both confusing and can steal
+    resources from the web-TUI.
+    """
+    lowered = (url or "").lower()
+    return (
+        lowered.startswith(("http://", "https://", "spotify:"))
+        or "youtube.com" in lowered
+        or "youtu.be" in lowered
+        or "spotify.com" in lowered
+        or kind in {"youtube", "youtube_music", "youtube_search",
+                    "youtube_music_search", "spotify", "spotify_web"}
+    )
+
+
+def _allow_xdg_fallback() -> bool:
+    return os.environ.get("KARAOKE_ALLOW_XDG_OPEN_FALLBACK") == "1"
+
+
+def _cdp_send(method: str, params: dict, *, timeout: float = 2.0, force: bool = False):
     """Send one CDP command and return its result, or None."""
-    return _CHANNEL.send(method, params, timeout=timeout)
+    return _CHANNEL.send(method, params, timeout=timeout, force=force)
 
 
 def close_cdp() -> None:
@@ -213,7 +260,7 @@ _DISMISS_DIALOGS_JS = """(() => {
   const keywords = [
     'understand', 'proceed', 'exit app', 'play anyway', 'confirm', 'dismiss', 'continue', 'got it', 'accept',
     'begrijp', 'doorgaan', 'verdergaan', 'app afsluiten', 'app sluiten', 'toch afspelen', 'toch bekijken',
-    'afspelen', 'bevestigen', 'akkoord', 'sluiten', 'weergeven', 'bekijken', 'begrepen', 'ik begrijp het',
+    'bevestigen', 'akkoord', 'sluiten', 'weergeven', 'bekijken', 'begrepen', 'ik begrijp het',
     'openen', 'ja'
   ];
 
@@ -264,7 +311,9 @@ _DISMISS_DIALOGS_JS = """(() => {
   }
 
   const v = document.querySelector('video');
-  if (clickedCount > 0 && v && v.paused) {
+  const bar = document.querySelector('ytmusic-player-bar');
+  const isCasting = bar ? (bar.castConnectionState === 'CONNECTED' || bar.castConnectionState === 'CONNECTING') : false;
+  if (clickedCount > 0 && v && v.paused && !isCasting) {
     v.play().catch(() => {});
   }
   return clickedCount;
@@ -273,8 +322,8 @@ _DISMISS_DIALOGS_JS = """(() => {
 
 def dismiss_kiosk_dialogs() -> bool:
     """Dismiss parental advisories, content warnings, and confirmation modals over CDP."""
-    _cdp_send("Page.handleJavaScriptDialog", {"accept": True})
-    reply = _cdp_send("Runtime.evaluate", {"expression": _DISMISS_DIALOGS_JS, "returnByValue": True})
+    _cdp_send("Page.handleJavaScriptDialog", {"accept": True}, timeout=0.2)
+    reply = _cdp_send("Runtime.evaluate", {"expression": _DISMISS_DIALOGS_JS, "returnByValue": True}, timeout=0.2)
     if reply and "result" in reply:
         val = reply["result"].get("result", {}).get("value")
         return bool(val)
@@ -283,6 +332,9 @@ def dismiss_kiosk_dialogs() -> bool:
 
 def try_chrome_cdp_navigate(url: str) -> bool:
     """Navigate the existing kiosk window to a URL, bypassing beforeunload prompts."""
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("KARAOKE_ALLOW_TEST_BROWSER"):
+        return False
+
     _cdp_send("Runtime.evaluate", {"expression": _BYPASS_BEFOREUNLOAD_JS})
     _cdp_send("Page.handleJavaScriptDialog", {"accept": True})
 
@@ -316,7 +368,7 @@ def cdp_play_pause() -> bool:
       if (btn) { btn.click(); return true; }
       return false;
     })()"""
-    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True}, force=True)
     return bool(reply and reply.get("result", {}).get("result", {}).get("value"))
 
 
@@ -327,7 +379,7 @@ def cdp_next_track() -> bool:
       if (btn) { btn.click(); return true; }
       return false;
     })()"""
-    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True}, force=True)
     return bool(reply and reply.get("result", {}).get("result", {}).get("value"))
 
 
@@ -338,7 +390,7 @@ def cdp_previous_track() -> bool:
       if (btn) { btn.click(); return true; }
       return false;
     })()"""
-    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True}, force=True)
     return bool(reply and reply.get("result", {}).get("result", {}).get("value"))
 
 
@@ -366,7 +418,7 @@ def cdp_toggle_av(mode: str | None = None) -> str:
         return "audio";
       }}
     }})()"""
-    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True}, force=True)
     val = reply.get("result", {}).get("result", {}).get("value") if reply else None
     return str(val or "unsupported")
 
@@ -378,7 +430,7 @@ def cdp_toggle_shuffle() -> bool:
       if (btn) { btn.click(); return true; }
       return false;
     })()"""
-    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True}, force=True)
     return bool(reply and reply.get("result", {}).get("result", {}).get("value"))
 
 
@@ -389,7 +441,7 @@ def cdp_toggle_repeat() -> bool:
       if (btn) { btn.click(); return true; }
       return false;
     })()"""
-    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True})
+    reply = _cdp_send("Runtime.evaluate", {"expression": js, "returnByValue": True}, force=True)
     return bool(reply and reply.get("result", {}).get("result", {}).get("value"))
 
 
@@ -399,7 +451,12 @@ def cdp_toggle_repeat() -> bool:
 # user picking something. The video element says plainly that it ended.
 _PLAYBACK_JS = """(() => {
   const v = document.querySelector('video');
-  if (!v) return JSON.stringify({present: false});
+  const bar = document.querySelector('ytmusic-player-bar');
+  const isCasting = bar ? (bar.castConnectionState === 'CONNECTED' || bar.castConnectionState === 'CONNECTING') : false;
+  if (isCasting && v && !v.muted) {
+    v.muted = true;
+  }
+  if (!v) return JSON.stringify({present: false, casting: isCasting});
   return JSON.stringify({
     present: true,
     ended: !!v.ended,
@@ -407,29 +464,42 @@ _PLAYBACK_JS = """(() => {
     position: v.currentTime || 0,
     duration: (isFinite(v.duration) ? v.duration : 0) || 0,
     readyState: v.readyState || 0,
+    muted: !!v.muted,
+    casting: isCasting,
     url: location.href
   });
 })()"""
 
 
-def browser_playback() -> "dict | None":
+_last_kiosk_dismiss: float = 0.0
+
+
+def browser_playback(timeout: float = 0.2) -> "dict | None":
     """What the kiosk browser's video element is doing, or None.
 
     Returns ``present``, ``ended``, ``paused``, ``position``, ``duration``,
-    ``readyState`` and ``url``.
+    ``readyState``, ``muted``, ``casting``, and ``url``.
     """
+    global _last_kiosk_dismiss
     import json
+    import time
 
     reply = _cdp_send("Runtime.evaluate",
-                      {"expression": _PLAYBACK_JS, "returnByValue": True})
+                      {"expression": _PLAYBACK_JS, "returnByValue": True},
+                      timeout=timeout)
     if not reply:
         return None
     try:
         raw = reply["result"]["result"]["value"]
         data = json.loads(raw)
-        # If the player is stalled or paused on an unhandled warning, attempt dismiss
-        if data.get("paused") or int(data.get("readyState") or 0) == 0:
-            dismiss_kiosk_dialogs()
+        # If the player is stalled or paused on an unhandled warning, attempt dismiss.
+        # Rate-limited to at most once per 5 seconds to prevent spamming CDP when paused.
+        # When casting is active, do not dismiss/unpause as the remote Cast device controls playback.
+        if (data.get("paused") or int(data.get("readyState") or 0) == 0) and not data.get("casting"):
+            now = time.monotonic()
+            if now - _last_kiosk_dismiss > 5.0:
+                _last_kiosk_dismiss = now
+                dismiss_kiosk_dialogs()
         return data
     except (KeyError, TypeError, ValueError):
         return None
@@ -534,6 +604,9 @@ def launch_kiosk_browser(url: str = "https://music.youtube.com") -> bool:
     import os
     import shutil
     import time
+
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("KARAOKE_ALLOW_TEST_BROWSER"):
+        return False
 
     if _cdp_page_socket() is not None:
         return True
@@ -673,20 +746,34 @@ def open_song_url(url: str, kind: str | None, *, artist: str = "",
     # are often out of sync with the album/audio track.
     is_youtube = kind in ("youtube", "youtube_music", "youtube_search", "youtube_music_search") or "youtube.com" in url.lower() or "youtu.be" in url.lower()
     if is_youtube:
+        from urllib.parse import parse_qs, urlparse, quote_plus
         from .localcache import extract_youtube_id
+
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        list_id = params.get("list", [""])[0]
+        index_id = params.get("index", [""])[0]
+
         vid = extract_youtube_id(url)
         if vid:
             # Direct watch link in YouTube Music plays immediately!
-            url = f"https://music.youtube.com/watch?v={vid}"
+            extra = []
+            if list_id:
+                extra.append(f"list={list_id}")
+            if index_id:
+                extra.append(f"index={index_id}")
+            suffix = f"&{'&'.join(extra)}" if extra else ""
+            url = f"https://music.youtube.com/watch?v={vid}{suffix}"
+            kind = "youtube_music"
+        elif list_id:
+            url = f"https://music.youtube.com/playlist?list={list_id}"
             kind = "youtube_music"
         elif prefer_audio and f"{artist} {title}".strip():
-            from urllib.parse import quote_plus
             search_query = f"{artist} {title}".strip()
             url = f"https://music.youtube.com/search?q={quote_plus(search_query)}"
             kind = "youtube_music_search"
         elif "/results?search_query=" in url:
-            from urllib.parse import parse_qs, urlparse, quote_plus
-            query = parse_qs(urlparse(url).query).get("search_query", [""])[0]
+            query = params.get("search_query", [""])[0]
             if query:
                 url = f"https://music.youtube.com/search?q={quote_plus(query)}"
                 kind = "youtube_music_search"
@@ -699,6 +786,15 @@ def open_song_url(url: str, kind: str | None, *, artist: str = "",
         if try_chrome_cdp_navigate(url):
             log.info("Launched kiosk-mode Chrome and navigated via CDP: %s", url)
             return None
+
+    if _is_browser_url(url, kind) and not _allow_xdg_fallback():
+        log.warning(
+            "Kiosk/CDP playback failed for %s; refusing xdg-open fallback "
+            "to avoid spawning the normal desktop browser. Set "
+            "KARAOKE_ALLOW_XDG_OPEN_FALLBACK=1 to restore the old fallback.",
+            url,
+        )
+        return None
 
     OPEN_STDOUT_LOG.parent.mkdir(parents=True, exist_ok=True)
     stdout = OPEN_STDOUT_LOG.open("ab")

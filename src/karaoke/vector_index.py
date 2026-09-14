@@ -9,8 +9,9 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from . import localcache
 from .config import settings
@@ -47,10 +48,21 @@ def _embedding_text(row: Any) -> str:
 
 
 def iter_track_rows(conn: Any) -> Iterable[Any]:
-    """Yield one row per SQLite track with preferred source and approved lyrics."""
+    """Yield one row per SQLite track with preferred source, approved lyrics, and audio genre."""
     cur = conn.cursor()
+    has_track_genre = True
+    try:
+        t_cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='track_genre'")
+        if not t_cur.fetchone():
+            has_track_genre = False
+    except Exception:
+        has_track_genre = False
+
+    genre_cols = "tg.genre AS audio_genre, tg.runner_up AS audio_genre_runner_up" if has_track_genre else "'' AS audio_genre, '' AS audio_genre_runner_up"
+    genre_join = "LEFT JOIN track_genre tg ON tg.track_id = t.track_id" if has_track_genre else ""
+
     cur.execute(
-        """
+        f"""
         SELECT
             t.track_id,
             t.artist,
@@ -62,8 +74,10 @@ def iter_track_rows(conn: Any) -> Iterable[Any]:
             s.player_name,
             l.source AS lyrics_source,
             l.synced_lyrics,
-            l.plain_lyrics
+            l.plain_lyrics,
+            {genre_cols}
         FROM tracks t
+        {genre_join}
         LEFT JOIN sources s ON s.source_id = (
             SELECT source_id FROM sources
             WHERE track_id = t.track_id
@@ -87,11 +101,29 @@ def iter_track_rows(conn: Any) -> Iterable[Any]:
     yield from cur.fetchall()
 
 
-def build_track_doc(row: Any, *, embed: bool = True) -> dict[str, Any]:
+def build_track_doc(
+    row: Any,
+    *,
+    embed: bool = True,
+    artist_genres_map: Optional[dict[str, dict[str, list[str]]]] = None,
+) -> dict[str, Any]:
     """Build one OpenSearch track document from a SQLite query row."""
     synced = row["synced_lyrics"] or ""
     plain = row["plain_lyrics"] or ""
     lines = parse_lrc(synced) if synced else []
+    keys = row.keys() if hasattr(row, "keys") else ()
+    audio_g = row["audio_genre"] if "audio_genre" in keys else ""
+    audio_ru = row["audio_genre_runner_up"] if "audio_genre_runner_up" in keys else ""
+
+    from .artist_classifier import classify_artist, normalize_artist
+    norm_artist = normalize_artist(row["artist"] or "")
+    artist_info = artist_genres_map.get(norm_artist) if artist_genres_map else None
+    if artist_info:
+        artist_genres = list(artist_info.get("specific") or [])
+        broad_genres = list(artist_info.get("broad") or [])
+    else:
+        artist_genres, broad_genres = classify_artist(row["artist"] or "", online=False)
+
     doc: dict[str, Any] = {
         "track_id": row["track_id"],
         "path": row["source_url"] or "",
@@ -107,8 +139,24 @@ def build_track_doc(row: Any, *, embed: bool = True) -> dict[str, Any]:
         "lyrics_source": row["lyrics_source"] or "none",
         "plain_lyrics": plain,
         "synced_lyrics": synced,
+        "artist_genres": artist_genres,
+        "broad_genres": broad_genres,
+        "audio_genre": audio_g or "",
+        "audio_genre_runner_up": audio_ru or "",
         "indexed_at": datetime.now(timezone.utc).isoformat(),
     }
+    lyrics_text = plain or ("\n".join(t for _, t in lines) if lines else "")
+    if lyrics_text:
+        from . import smartlist, visuals
+        profile = visuals.analyze_sentiment(lyrics_text)
+        doc["dominant_mood"] = profile.dominant
+        doc["sentiment_hits"] = profile.total_hits
+        doc["sentiment_vector"] = list(smartlist.mood_vector(profile))
+    else:
+        doc["dominant_mood"] = "neutral"
+        doc["sentiment_hits"] = 0
+        doc["sentiment_vector"] = [0.0, 0.0, 0.0, 0.0]
+
     if embed:
         from .embed import embed_text
 
@@ -308,6 +356,131 @@ def ensure_note_index(os_client: Any, index_name: str) -> bool:
     return True
 
 
+PROGRESS_FILE = "vector_index_progress.json"
+
+
+def _progress_path(path: Optional[Path] = None) -> Path:
+    return path if path is not None else Path(settings.data_dir) / PROGRESS_FILE
+
+
+def get_progress(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """Return the most recent progress report if it exists."""
+    p = _progress_path(path)
+    if not p.exists():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _write_progress(data: dict[str, Any], path: Optional[Path] = None) -> None:
+    """Atomically record progress to a local JSON file."""
+    p = _progress_path(path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        tmp.replace(p)
+    except Exception:
+        pass
+
+
+def _iter_actions(
+    rows: list[Any],
+    note_rows: list[Any],
+    *,
+    embed: bool,
+    include_lines: bool,
+    include_notes: bool,
+    dry_run: bool,
+    stats: VectorIndexStats,
+    progress_callback: Optional[Callable[[VectorIndexStats, int], None]] = None,
+    artist_genres_map: Optional[dict[str, dict[str, list[str]]]] = None,
+) -> Iterable[tuple[str, str, dict[str, Any]]]:
+    """Yield ``(index, doc_id, source)`` for every document to write.
+
+    Documents are produced one track at a time so the embedding of a track's
+    lines is the only vector batch held in memory; the caller flushes in chunks,
+    keeping a full rebuild's footprint bounded regardless of library size. Stats
+    are counted here as each doc is produced; transport-level failures are
+    counted separately by the flusher.
+    """
+    total = len(rows)
+    for row in rows:
+        stats.seen += 1
+        try:
+            doc = build_track_doc(row, embed=embed, artist_genres_map=artist_genres_map)
+            if dry_run:
+                stats.skipped += 1
+            else:
+                stats.indexed += 1
+            yield settings.index_name, track_doc_id(row["track_id"]), doc
+            if include_lines:
+                for _doc_id, line_doc in build_line_docs(row, embed=embed):
+                    stats.line_docs += 1
+                    yield f"{settings.index_name}-lines", _doc_id, line_doc
+        except Exception:
+            stats.errors += 1
+
+        if progress_callback is not None and (stats.seen % 250 == 0 or stats.seen == total):
+            progress_callback(stats, total)
+
+    if include_notes:
+        for note_row in note_rows:
+            try:
+                note_doc = build_note_doc(note_row, embed=embed)
+                stats.note_docs += 1
+                yield (f"{settings.index_name}-notes",
+                       note_doc_id(note_row["note_id"]), note_doc)
+            except Exception:
+                stats.errors += 1
+
+
+def _bulk_write(
+    c: Any,
+    actions: Iterable[tuple[str, str, dict[str, Any]]],
+    *,
+    chunk_size: int,
+    request_timeout: int = 120,
+) -> int:
+    """Write documents to OpenSearch in batches via the native ``_bulk`` API.
+
+    One HTTP request carries up to ``chunk_size`` documents, replacing the
+    per-document round-trip that dominated a full rebuild (~one request per doc
+    at ~13ms each). Fewer, larger requests are also gentler on the cluster and
+    leave headroom for a concurrent TUI/web-TUI. Returns the number of documents
+    the cluster rejected.
+    """
+    errors = 0
+    batch: list[tuple[str, str, dict[str, Any]]] = []
+
+    def flush() -> int:
+        if not batch:
+            return 0
+        body: list[dict[str, Any]] = []
+        for index, doc_id, source in batch:
+            body.append({"index": {"_index": index, "_id": doc_id}})
+            body.append(source)
+        resp = c.bulk(body=body, request_timeout=request_timeout)
+        failed = 0
+        if resp.get("errors"):
+            for item in resp.get("items", []):
+                if item.get("index", {}).get("error"):
+                    failed += 1
+        batch.clear()
+        return failed
+
+    for action in actions:
+        batch.append(action)
+        if len(batch) >= chunk_size:
+            errors += flush()
+    errors += flush()
+    return errors
+
+
 def rebuild_from_sqlite(
     *,
     db_path: Optional[str] = None,
@@ -317,8 +490,13 @@ def rebuild_from_sqlite(
     include_notes: bool = False,
     dry_run: bool = False,
     os_client: Any = None,
+    chunk_size: int = 500,
 ) -> VectorIndexStats:
-    """Index SQLite tracks into OpenSearch; safe to re-run."""
+    """Index SQLite tracks into OpenSearch; safe to re-run.
+
+    Writes go out in batches of ``chunk_size`` documents through the OpenSearch
+    ``_bulk`` API rather than one request per document.
+    """
     # Production rebuilds touch the shared OpenSearch indexes and need a global
     # lock. Explicit test/spike rebuilds against an explicit DB and either a
     # fake client or dry-run are isolated; let them run even while a live Admin
@@ -333,12 +511,38 @@ def rebuild_from_sqlite(
             log.info("vector_index: rebuild lock held by another process; skipping concurrent run.")
             return VectorIndexStats()
 
+    started_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+    def progress_cb(st: VectorIndexStats, total: int) -> None:
+        pct = round(st.seen / total * 100, 1) if total else 0.0
+        from .logger import log
+        log.info(
+            "vector_index rebuild progress: %d/%d tracks (%.1f%%), %d lines, %d errors",
+            st.seen, total, pct, st.line_docs, st.errors,
+        )
+        if not isolated:
+            import os
+            _write_progress({
+                "status": "running",
+                "started_at": started_at,
+                "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "total_tracks": total,
+                "processed_tracks": st.seen,
+                "indexed_tracks": st.indexed,
+                "line_docs": st.line_docs,
+                "note_docs": st.note_docs,
+                "errors": st.errors,
+                "percent": pct,
+                "pid": os.getpid(),
+            })
+
     try:
         from .osclient import client, ensure_index
 
         conn = localcache.connect(None if db_path is None else Path(db_path))
         stats = VectorIndexStats()
         try:
+            artist_genres_map = localcache.get_all_artist_genres_map(conn)
             rows = list(iter_track_rows(conn))
             note_rows = list(localcache.iter_note_rows(conn)) if include_notes else []
         finally:
@@ -355,46 +559,185 @@ def rebuild_from_sqlite(
             if include_notes:
                 ensure_note_index(c, f"{settings.index_name}-notes")
 
-        for row in rows:
-            stats.seen += 1
-            try:
-                doc = build_track_doc(row, embed=embed)
-                if dry_run:
-                    stats.skipped += 1
-                else:
-                    assert c is not None
-                    c.index(index=settings.index_name, id=track_doc_id(row["track_id"]), body=doc)
-                    stats.indexed += 1
-                if include_lines:
-                    for _doc_id, line_doc in build_line_docs(row, embed=embed):
-                        stats.line_docs += 1
-                        if not dry_run:
-                            assert c is not None
-                            c.index(index=f"{settings.index_name}-lines", id=_doc_id, body=line_doc)
-            except Exception:
-                stats.errors += 1
+        actions = _iter_actions(
+            rows, note_rows, embed=embed, include_lines=include_lines,
+            include_notes=include_notes, dry_run=dry_run, stats=stats,
+            progress_callback=progress_cb if not isolated else None,
+            artist_genres_map=artist_genres_map,
+        )
 
-        for note_row in note_rows:
-            try:
-                note_doc = build_note_doc(note_row, embed=embed)
-                stats.note_docs += 1
-                if not dry_run:
-                    assert c is not None
-                    c.index(index=f"{settings.index_name}-notes",
-                            id=note_doc_id(note_row["note_id"]), body=note_doc)
-            except Exception:
-                stats.errors += 1
-
-        if c is not None and not dry_run:
+        if dry_run or c is None:
+            # Consume the generator to build docs and populate counts without
+            # touching the cluster.
+            for _ in actions:
+                pass
+        else:
+            stats.errors += _bulk_write(c, actions, chunk_size=chunk_size)
             c.indices.refresh(index=settings.index_name)
             if include_lines:
                 c.indices.refresh(index=f"{settings.index_name}-lines")
             if include_notes:
                 c.indices.refresh(index=f"{settings.index_name}-notes")
+
+        if not isolated:
+            import os
+            total = len(rows)
+            pct = 100.0 if total and stats.seen == total else (round(stats.seen / total * 100, 1) if total else 0.0)
+            _write_progress({
+                "status": "completed" if stats.errors == 0 else "completed_with_errors",
+                "started_at": started_at,
+                "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "total_tracks": total,
+                "processed_tracks": stats.seen,
+                "indexed_tracks": stats.indexed,
+                "line_docs": stats.line_docs,
+                "note_docs": stats.note_docs,
+                "errors": stats.errors,
+                "percent": pct,
+                "pid": os.getpid(),
+            })
+
         return stats
+    except Exception as exc:
+        if not isolated:
+            import os
+            _write_progress({
+                "status": "failed",
+                "started_at": started_at,
+                "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "error": str(exc),
+                "pid": os.getpid(),
+            })
+        raise
     finally:
         if lock is not None:
             lock.release()
+
+
+def vector_index_status(
+    *,
+    db_path: Optional[str] = None,
+    os_client: Any = None,
+) -> dict[str, Any]:
+    """Inspect the current vector indexing state across SQLite, OpenSearch, and locks."""
+    from .lockfile import ProcessLock
+    lock = ProcessLock("vector_rebuild")
+    is_running = lock.is_locked()
+    progress = get_progress()
+
+    db_tracks = None
+    db_error = None
+    try:
+        conn = localcache.connect(None if db_path is None else Path(db_path))
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM tracks")
+            row = cursor.fetchone()
+            db_tracks = row[0] if row else 0
+        finally:
+            conn.close()
+    except Exception as exc:
+        db_error = str(exc)
+
+    c = os_client
+    os_connected = False
+    os_error = None
+    os_indices: dict[str, dict[str, Any]] = {}
+    if c is None:
+        try:
+            from .osclient import client
+            c = client()
+        except Exception as exc:
+            os_error = str(exc)
+
+    if c is not None:
+        try:
+            if hasattr(c, "cat") and hasattr(c.cat, "indices"):
+                items = c.cat.indices(index=f"{settings.index_name}*", format="json")
+                os_connected = True
+                for item in items:
+                    name = item.get("index")
+                    if name:
+                        os_indices[name] = {
+                            "docs_count": int(item.get("docs.count", 0)),
+                            "store_size": item.get("store.size", "0b"),
+                            "health": item.get("health", "unknown"),
+                            "status": item.get("status", "unknown"),
+                        }
+            else:
+                os_connected = True
+        except Exception as exc:
+            os_error = str(exc)
+
+    tracks_indexed = os_indices.get(settings.index_name, {}).get("docs_count") if os_connected else None
+    lines_indexed = os_indices.get(f"{settings.index_name}-lines", {}).get("docs_count") if os_connected else None
+    notes_indexed = os_indices.get(f"{settings.index_name}-notes", {}).get("docs_count") if os_connected else None
+
+    pct = None
+    if db_tracks and tracks_indexed is not None and db_tracks > 0:
+        pct = round(min(100.0, (tracks_indexed / db_tracks) * 100), 1)
+
+    return {
+        "is_running": is_running,
+        "db_tracks": db_tracks,
+        "db_error": db_error,
+        "os_connected": os_connected,
+        "os_error": os_error,
+        "tracks_indexed": tracks_indexed,
+        "lines_indexed": lines_indexed,
+        "notes_indexed": notes_indexed,
+        "percent_complete": pct,
+        "indices": os_indices,
+        "progress": progress,
+    }
+
+
+def format_status_report(status: dict[str, Any]) -> str:
+    lines = ["Vector Index Status:"]
+    running = status.get("is_running")
+    lines.append(f"  Rebuild running: {'YES (in progress)' if running else 'NO (idle)'}")
+
+    prog = status.get("progress")
+    if prog:
+        st = prog.get("status", "unknown")
+        proc = prog.get("processed_tracks", 0)
+        tot = prog.get("total_tracks", 0)
+        pct = prog.get("percent", 0.0)
+        started = prog.get("started_at", "")
+        updated = prog.get("updated_at", "")
+        lines.append(f"  Last run status: {st} ({proc:,}/{tot:,} tracks, {pct}%)")
+        if started or updated:
+            lines.append(f"    Started: {started} | Updated: {updated}")
+        if prog.get("error"):
+            lines.append(f"    Error: {prog['error']}")
+
+    db_tracks = status.get("db_tracks")
+    if db_tracks is not None:
+        lines.append(f"  SQLite library:  {db_tracks:,} tracks")
+    elif status.get("db_error"):
+        lines.append(f"  SQLite library:  Error ({status['db_error']})")
+
+    if status.get("os_connected"):
+        lines.append(f"  OpenSearch:      Connected ({settings.opensearch_url})")
+        tracks_count = status.get("tracks_indexed")
+        pct = status.get("percent_complete")
+        pct_str = f" ({pct}% of SQLite library)" if pct is not None else ""
+        if tracks_count is not None:
+            lines.append(f"    - tracks:       {tracks_count:,} docs{pct_str}")
+        else:
+            lines.append("    - tracks:       index not found")
+
+        lines_count = status.get("lines_indexed")
+        if lines_count is not None:
+            lines.append(f"    - tracks-lines: {lines_count:,} docs")
+        notes_count = status.get("notes_indexed")
+        if notes_count is not None:
+            lines.append(f"    - tracks-notes: {notes_count:,} docs")
+    else:
+        err = status.get("os_error", "Not reachable")
+        lines.append(f"  OpenSearch:      Disconnected ({err})")
+
+    return "\n".join(lines)
 
 
 def vector_index_main(argv: Optional[list[str]] = None) -> int:
@@ -409,12 +752,40 @@ def vector_index_main(argv: Optional[list[str]] = None) -> int:
                     help="also index track notes (biographies, transcriptions)")
     ap.add_argument("--no-embed", action="store_true", help="skip embedding generation")
     ap.add_argument("--dry-run", action="store_true", help="read/build docs without writing OpenSearch")
+    ap.add_argument("--status", action="store_true", help="show current indexing status and progress")
+    ap.add_argument("--json", action="store_true", help="output status in JSON format")
     ap.add_argument("--limit", type=int, default=None, help="maximum tracks to process")
     ap.add_argument("--db", default=None, help="SQLite DB path (default: configured local DB)")
+    ap.add_argument("--chunk-size", type=int, default=500,
+                    help="documents per OpenSearch _bulk request (default 500)")
+    ap.add_argument("--threads", type=int, default=None,
+                    help="cap CPU threads used for embedding, to leave headroom "
+                         "for a running TUI/web-TUI (default: all cores)")
     args = ap.parse_args(argv)
 
+    if args.status:
+        st = vector_index_status(db_path=args.db)
+        if args.json:
+            print(json.dumps(st, indent=2))
+        else:
+            print(format_status_report(st))
+        return 0
+
     if not args.rebuild and not args.dry_run:
-        ap.error("choose --rebuild or --dry-run")
+        ap.error("choose --rebuild, --dry-run, or --status")
+
+    if args.threads and args.threads > 0:
+        # Bound the embedding thread pool so a rebuild does not saturate every
+        # core and starve a concurrent TUI/web-TUI. Set before torch imports.
+        import os
+        for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                    "NUMEXPR_NUM_THREADS", "TORCH_NUM_THREADS"):
+            os.environ[var] = str(args.threads)
+        try:
+            import torch
+            torch.set_num_threads(args.threads)
+        except Exception:
+            pass
 
     stats = rebuild_from_sqlite(
         db_path=args.db,
@@ -423,6 +794,7 @@ def vector_index_main(argv: Optional[list[str]] = None) -> int:
         include_lines=args.lines,
         include_notes=args.notes,
         dry_run=args.dry_run,
+        chunk_size=args.chunk_size,
     )
     action = "dry-run" if args.dry_run else "indexed"
     print(

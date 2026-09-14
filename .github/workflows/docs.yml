@@ -1,0 +1,59 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "scripts/doc_sync.py"
+      - "src/karaoke/**"
+      - "Makefile"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "scripts/doc_sync.py"
+      - "src/karaoke/**"
+      - "Makefile"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-docs:
+    name: Validate documentation and MkDocs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            mkdocs==1.6.1 \
+            mkdocs-materialx==10.0.9 \
+            mkdocs-mermaid2-plugin==1.2.3 \
+            mkdocs-monorepo-plugin==1.1.2 \
+            "mkdocstrings[python]==1.0.3" \
+            mkdocstrings-python==2.0.3 \
+            "mkdocs-graphviz>=1.5.3" \
+            "mkdocs-glightbox>=0.5.2" \
+            pyyaml
+
+      - name: Audit documentation drift
+        env:
+          PYTHONPATH: src
+        run: python scripts/doc_sync.py --check
+
+      - name: Build MkDocs site (strict)
+        run: mkdocs build --strict

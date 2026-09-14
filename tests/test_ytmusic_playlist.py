@@ -1,6 +1,7 @@
 """Tests for YouTube Music playlist sync, library import, and client methods."""
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -52,6 +53,83 @@ def test_karaoke_tracks_picks_synced_with_yt_sources(tmp_path):
     assert by_artist["Radiohead"].video_id == ""  # Needs resolution
 
     assert "Untimed" not in by_artist
+
+
+def test_queue_rows_to_ytmusic_candidates_keeps_youtube_only():
+    rows = [
+        {"artist": "A", "title": "YT", "url": "https://music.youtube.com/watch?v=ABCDEFGHIJK"},
+        {"artist": "B", "title": "Spotify", "url": "https://open.spotify.com/track/123"},
+        {"artist": "C", "title": "Duplicate", "url": "https://youtu.be/ABCDEFGHIJK"},
+        {"artist": "D", "title": "YT2", "url": "https://www.youtube.com/watch?v=LMNOPQRSTU1&list=RD"},
+    ]
+
+    candidates = yp.queue_rows_to_ytmusic_candidates(rows)
+
+    assert [(c.artist, c.title, c.video_id) for c in candidates] == [
+        ("A", "YT", "ABCDEFGHIJK"),
+        ("D", "YT2", "LMNOPQRSTU1"),
+    ]
+
+
+def test_create_temp_queue_playlist_overwrites_daily_playlist():
+    client = MagicMock(spec=YTMusicClient)
+    client.is_authenticated = True
+    client.get_library_playlists.side_effect = [
+        [{"title": "Karaoke Temp Queue 2026-09-10", "playlistId": "PL_TODAY"}],
+        [{"title": "Karaoke Temp Queue 2026-09-10", "playlistId": "PL_TODAY"}],
+    ]
+    client.get_playlist.return_value = {
+        "tracks": [{"videoId": "OLDOLDOLD01", "setVideoId": "SET_OLD"}],
+    }
+
+    res = yp.create_temp_queue_playlist(
+        [{"artist": "A", "title": "Song", "url": "https://music.youtube.com/watch?v=ABCDEFGHIJK"}],
+        name="Karaoke Temp Queue 2026-09-10",
+        client=client,
+    )
+
+    assert res.playlist_id == "PL_TODAY"
+    client.create_playlist.assert_not_called()
+    client.remove_playlist_items.assert_called_once()
+    client.add_playlist_items.assert_called_once_with("PL_TODAY", ["ABCDEFGHIJK"], duplicates=True)
+
+
+def test_get_latest_temp_queue_playlist_fetches_and_maps():
+    client = MagicMock(spec=YTMusicClient)
+    client.is_authenticated = True
+    client.get_library_playlists.return_value = [
+        {"title": "Karaoke Temp Queue 2026-09-11", "playlistId": "PL_LATEST"},
+        {"title": "Karaoke Temp Queue 2026-09-10", "playlistId": "PL_OLDER"},
+    ]
+    client.get_playlist.return_value = {
+        "tracks": [
+            {"videoId": "VID12345678", "title": "Track One", "artists": [{"name": "Artist One"}]},
+        ],
+    }
+
+    db_conn = sqlite3.connect(":memory:")
+    db_conn.row_factory = sqlite3.Row
+    db_conn.executescript(
+        """
+        CREATE TABLE tracks (track_id INTEGER PRIMARY KEY, artist TEXT, title TEXT);
+        CREATE TABLE sources (source_id INTEGER PRIMARY KEY, track_id INTEGER, kind TEXT, url TEXT);
+        CREATE TABLE track_analysis (track_id INTEGER PRIMARY KEY, detected_key TEXT, bpm REAL, energy REAL);
+        CREATE TABLE track_genre (track_id INTEGER PRIMARY KEY, genre TEXT);
+        INSERT INTO tracks VALUES (1, 'Artist One', 'Track One');
+        INSERT INTO sources VALUES (1, 1, 'youtube_music', 'https://music.youtube.com/watch?v=VID12345678');
+        INSERT INTO track_analysis VALUES (1, 'C major', 120.0, 0.75);
+        INSERT INTO track_genre VALUES (1, 'Pop');
+        """
+    )
+
+    res = yp.get_latest_temp_queue_playlist(client=client, conn=db_conn)
+    assert res is not None
+    assert res["playlist_id"] == "PL_LATEST"
+    assert len(res["rows"]) == 1
+    assert res["rows"][0]["track_id"] == 1
+    assert res["rows"][0]["artist"] == "Artist One"
+    assert res["rows"][0]["genre"] == "Pop"
+
 
 
 # --- Playlist Sync & Build -------------------------------------------------

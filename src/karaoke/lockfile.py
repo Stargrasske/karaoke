@@ -47,6 +47,25 @@ class ProcessLock:
             finally:
                 self._fd = None
 
+    def is_locked(self) -> bool:
+        """Check if the lock is held by another process without acquiring it."""
+        if self._fd is not None:
+            return True
+        if not self._lock_file.exists():
+            return False
+        try:
+            fd = os.open(str(self._lock_file), os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                return False
+            except (BlockingIOError, OSError):
+                return True
+            finally:
+                os.close(fd)
+        except OSError:
+            return False
+
     def __enter__(self) -> bool:
         return self.acquire()
 

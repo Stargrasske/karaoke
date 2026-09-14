@@ -363,3 +363,27 @@ def test_celery_emits_task_events_for_argo_events():
     assert celery_app.app.conf.worker_send_task_events is True
     assert celery_app.app.conf.task_send_sent_event is True
     assert celery_app.app.conf.task_track_started is True
+
+
+def test_postprocess_context_does_not_mutate_input():
+    import json
+    input_dict = {
+        "artist": "Artist",
+        "title": "Song",
+        "url": "https://example.com/audio.mp3",
+        "audio_path": "/tmp/audio.mp3",
+        "pending": ["analysis", "sync"],
+    }
+    ctx = PostprocessContext.from_dict(input_dict)
+    # Ensure input_dict was not mutated
+    assert isinstance(input_dict["audio_path"], str)
+    assert input_dict["audio_path"] == "/tmp/audio.mp3"
+
+    # Ensure ctx fields
+    assert isinstance(ctx.audio_path, Path)
+
+    # Ensure to_dict produces valid JSON
+    serialized = ctx.to_dict()
+    assert isinstance(serialized["audio_path"], str)
+    json_bytes = json.dumps(serialized)
+    assert "/tmp/audio.mp3" in json_bytes

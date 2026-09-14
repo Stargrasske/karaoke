@@ -22,7 +22,7 @@ from typing import Any, Optional, List, Dict
 from urllib.parse import quote_plus
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .logger import log
@@ -384,6 +384,28 @@ def record_discard(recording_id: int) -> dict[str, Any]:
     freed = recording_worker.discard_audio(recording_id)
     return {"status": "discarded", "recording_id": recording_id,
             "freed_bytes": freed}
+
+
+@app.post("/api/radio/sessions/{session_id}/import")
+def radio_session_import(session_id: int, background: BackgroundTasks,
+                         save_audio: bool = True, resolve_streaming: bool = True) -> dict[str, Any]:
+    """Import tracks from a radio session into the karaoke library."""
+    from . import localcache, radio_pipeline
+    with localcache.connect() as conn:
+        session = localcache.get_radio_session(session_id, conn=conn)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Radio session not found")
+
+    def _bg():
+        try:
+            radio_pipeline.import_radio_session(session_id, save_audio=save_audio,
+                                                resolve_streaming=resolve_streaming)
+        except Exception as exc:
+            log.error("Background radio session import failed for %s: %s", session_id, exc)
+
+    background.add_task(_bg)
+    return {"status": "accepted", "session_id": session_id}
+
 
 
 @app.get("/api/players/window")
@@ -869,6 +891,42 @@ def get_error_logs(lines: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
         return {"status": "ok", "count": len(errs), "logs": errs[-lines:]}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read logs: {exc}")
+
+
+# -- stage / tv prompter view --------------------------------------------
+
+
+@app.get("/stage", response_class=HTMLResponse)
+@app.get("/tv", response_class=HTMLResponse)
+def stage_page() -> HTMLResponse:
+    """Dedicated full-screen stage view for TV/prompter displays."""
+    from . import stage_view
+
+    return HTMLResponse(stage_view.render_stage_html())
+
+
+@app.get("/api/stage/stream")
+async def stage_stream() -> StreamingResponse:
+    """Real-time SSE stream of live playback, lyrics, rhythm, and queue for stage view."""
+    from . import stage_view
+
+    return StreamingResponse(
+        stage_view.stage_event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/stage/state")
+def stage_state() -> dict[str, Any]:
+    """Single-snapshot REST endpoint for current stage state."""
+    from . import stage_view
+
+    return stage_view.get_stage_state()
 
 
 def main() -> None:

@@ -353,6 +353,7 @@ def test_playlist_queue_controls(monkeypatch):
     monkeypatch.setattr(app, "notify", lambda msg, **k: notifications.append(msg), raising=False)
     monkeypatch.setattr(app, "_selected_song", lambda: {"artist": "Artist 1", "title": "Song 1", "url": "http://a", "kind": "youtube"}, raising=False)
     monkeypatch.setattr(app, "_render_queue", lambda: None, raising=False)
+    monkeypatch.setattr(app, "play_queue_index", lambda *a, **k: None, raising=False)
 
     class FakeTable:
         def set_class(self, *a, **k): pass
@@ -500,6 +501,86 @@ def test_star_search_can_fill_queue_for_active_genre_filter(tmp_path):
         assert [row["title"] for row in rows] == ["Pop Song"]
     finally:
         conn.close()
+
+
+def test_search_with_genre_filter_in_tui(tmp_path):
+    """Searching for a query like 'nothing' with an active genre filter only returns tracks of that genre."""
+    from karaoke import localcache
+    from karaoke.lyrics import Lyrics
+    from karaoke.tui import KaraokeTui
+
+    conn = localcache.connect(tmp_path / "tui_genre.db")
+    try:
+        t1 = localcache.add_track_and_lyrics(
+            "Metal Band", "Nothing Else", Lyrics(plain="nothing here", source="lrclib"),
+            url="https://youtu.be/metal", conn=conn)
+        t2 = localcache.add_track_and_lyrics(
+            "Pop Singer", "Nothing Compares", Lyrics(plain="nothing compares", source="lrclib"),
+            url="https://youtu.be/pop", conn=conn)
+        conn.execute("INSERT INTO track_genre (track_id, genre, labelled_at) VALUES (?, ?, 1)",
+                     (t1, "heavy metal"))
+        conn.execute("INSERT INTO track_genre (track_id, genre, labelled_at) VALUES (?, ?, 1)",
+                     (t2, "pop"))
+        conn.commit()
+
+        app = KaraokeTui.__new__(KaraokeTui)
+        app._mood_filter = "all"
+        app._genre_filter = "heavy metal"
+        app._mood_level = 0.0
+
+        from karaoke import librarysearch
+        hits = librarysearch.search("nothing", conn, limit=70, genre=app._genre_filter)
+        rows = [{"track_id": h.track_id, "artist": h.artist, "title": h.title, "genre": h.genre} for h in hits]
+        filtered = app._apply_mood_filter(rows, conn)
+        assert len(filtered) == 1
+        assert filtered[0]["title"] == "Nothing Else"
+        assert filtered[0]["genre"] == "heavy metal"
+
+        # Now switch to pop
+        app._genre_filter = "pop"
+        hits_pop = librarysearch.search("nothing", conn, limit=70, genre=app._genre_filter)
+        rows_pop = [{"track_id": h.track_id, "artist": h.artist, "title": h.title, "genre": h.genre} for h in hits_pop]
+        filtered_pop = app._apply_mood_filter(rows_pop, conn)
+        assert len(filtered_pop) == 1
+        assert filtered_pop[0]["title"] == "Nothing Compares"
+        assert filtered_pop[0]["genre"] == "pop"
+    finally:
+        conn.close()
+
+
+def test_load_tracks_with_genre_filter(tmp_path):
+    """_load_tracks filters by genre in SQL so tracks beyond the first 70 are found."""
+    from karaoke import localcache
+    from karaoke.lyrics import Lyrics
+    from karaoke.tui import KaraokeTui
+
+    conn = localcache.connect(tmp_path / "load_tracks.db")
+    try:
+        # Insert 80 tracks with genre "rock"
+        for i in range(80):
+            tid = localcache.add_track_and_lyrics(
+                f"A Rocker {i:02d}", f"Rock Song {i}", Lyrics(plain="rock", source="lrclib"),
+                url=f"https://youtu.be/rock{i}", conn=conn)
+            conn.execute("INSERT INTO track_genre (track_id, genre, labelled_at) VALUES (?, 'rock', 1)", (tid,))
+        # Insert 1 jazz track with artist starting with 'Z'
+        z_id = localcache.add_track_and_lyrics(
+            "Z Jazz Artist", "Jazz Tune", Lyrics(plain="jazz", source="lrclib"),
+            url="https://youtu.be/jazz", conn=conn)
+        conn.execute("INSERT INTO track_genre (track_id, genre, labelled_at) VALUES (?, 'jazz', 1)", (z_id,))
+        conn.commit()
+
+        app = KaraokeTui.__new__(KaraokeTui)
+        app._filter = "all"
+        app._genre_filter = "jazz"
+        app._song_data = []
+
+        app._load_tracks(conn, only_working=False)
+        assert len(app._song_data) == 1
+        assert app._song_data[0]["title"] == "Jazz Tune"
+        assert app._song_data[0]["genre"] == "jazz"
+    finally:
+        conn.close()
+
 
 
 def test_play_count_migration_and_increment(tmp_path):
@@ -936,6 +1017,23 @@ def test_track_info_omits_what_is_not_known():
     out = track_info(offset=0.2)
     assert "source" not in out and "length" not in out and "postproc" not in out
     assert "+0.2s" in out
+
+
+def test_track_info_shows_genre_and_sound():
+    from karaoke.tui import track_info
+
+    out = track_info(genre="blues", sound="delta blues (acoustic)")
+    assert "genre" in out
+    assert "blues" in out
+    assert "sound" in out
+    assert "delta blues (acoustic)" in out
+
+
+def test_more_like_this_binding_exists():
+    from karaoke.tui import KaraokeTui
+
+    actions = {b[1] if isinstance(b, tuple) else b.action for b in KaraokeTui.BINDINGS}
+    assert "more_like_this" in actions
 
 
 def test_an_error_replaces_the_block(): 

@@ -725,6 +725,7 @@ def play_offset_synced(
 def play_radio_synced(
     *,
     mic: bool = True,
+    record: bool = False,
     reidentify_interval: float = 30.0,
     extra_latency: float = 0.0,
     listen_timeout: int = 30,
@@ -746,8 +747,53 @@ def play_radio_synced(
 
     from .identify import identify_live
     from .player import get_synced, timeline_from_lyrics  # self-import safe
+    from . import localcache
 
     console = Console()
+
+    # Radio session state tracking in database
+    source_name = "mic" if mic else "monitor"
+    session_id = localcache.start_radio_session(source=source_name, is_recording=record)
+
+    rec_state = {
+        "is_recording": False,
+        "recording_id": None,
+        "started_at": None,
+    }
+
+    def _start_recording() -> tuple[bool, str]:
+        from . import recorder, identify, sample_audio
+        src = identify._default_source(mic=mic) or (sample_audio.monitor_source() if not mic else "")
+        try:
+            rec_sess = recorder.start(source=src, keep_audio=True, note=f"Radio session #{session_id}")
+            rec_state["is_recording"] = True
+            rec_state["recording_id"] = rec_sess.recording_id
+            rec_state["started_at"] = time.time()
+            localcache.update_radio_session_recording(session_id, rec_sess.recording_id, is_recording=True)
+            return True, f"Recording #{rec_sess.recording_id} started ({src or 'default'})"
+        except Exception as exc:
+            return False, f"Cannot start recording: {exc}"
+
+    def _stop_recording() -> str:
+        rid = rec_state["recording_id"]
+        if rid is not None:
+            from . import recorder
+            try:
+                rec_cnt, tot_cnt = recorder.mark_count(rid)
+            except Exception:
+                rec_cnt, tot_cnt = 0, 0
+            recorder.stop(rid)
+            rec_state["is_recording"] = False
+            rec_state["recording_id"] = None
+            rec_state["started_at"] = None
+            localcache.update_radio_session_recording(session_id, None, is_recording=False)
+            return f"Recording #{rid} stopped ({rec_cnt}/{tot_cnt} tracks marked)"
+        return "Not recording"
+
+    if record:
+        ok, msg = _start_recording()
+        if not ok:
+            console.print(f"[bold yellow]Warning: {msg}[/bold yellow]")
 
     # Shared state guarded by a lock; updated by the background identifier.
     state = {
@@ -779,11 +825,16 @@ def play_radio_synced(
                 state["offset"] = ref.offset
                 state["offset_mono"] = ref.offset_mono
                 state["status"] = "in sync"
-            from . import localcache
             localcache.log_event("radio", "relock", artist=ref.artist, title=ref.title)
+            localcache.record_radio_track(session_id, ref.artist, ref.title, offset_s=ref.offset)
+            if rec_state["is_recording"] and rec_state["recording_id"] is not None:
+                try:
+                    from . import recorder
+                    recorder.add_mark(rec_state["recording_id"], ref)
+                except Exception:
+                    pass
             return
         # New song -> fetch lyrics (slow) OUTSIDE the lock.
-        from . import localcache
         localcache.log_event(
             "radio", "discover", artist=ref.artist, title=ref.title, source="songrec"
         )
@@ -793,6 +844,16 @@ def play_radio_synced(
             "radio", "play", artist=ref.artist, title=ref.title,
             source=ly.source, has_synced=bool(tl.lines),
         )
+        localcache.record_radio_track(
+            session_id, ref.artist, ref.title,
+            offset_s=ref.offset, has_synced=bool(tl.lines), lyric_source=ly.source
+        )
+        if rec_state["is_recording"] and rec_state["recording_id"] is not None:
+            try:
+                from . import recorder
+                recorder.add_mark(rec_state["recording_id"], ref)
+            except Exception:
+                pass
         with lock:
             state["key"] = key
             state["artist"] = ref.artist
@@ -837,15 +898,22 @@ def play_radio_synced(
         else:
             body.append("\n  ♪ …\n\n", style="dim")
         n = nudge[0]
-        foot = f"{mood}  ·  {status}"
+        rec_indicator = ""
+        if rec_state["is_recording"] and rec_state["recording_id"] is not None:
+            elapsed_s = int(time.time() - (rec_state["started_at"] or time.time()))
+            m, s = divmod(elapsed_s, 60)
+            rec_indicator = f"  ·  [bold red]● REC #{rec_state['recording_id']} ({m:02d}:{s:02d})[/bold red]"
+        else:
+            rec_indicator = "  ·  [dim]rec: off (r)[/dim]"
+        foot = f"{mood}  ·  {status}{rec_indicator}"
         if abs(n) > 1e-6:
             foot += f"  ·  nudge {n:+.1f}s"
-        foot += "  ·  " + _NUDGE_HINT
+        foot += "  ·  " + _NUDGE_HINT + " · r rec"
         color = _MOOD_BORDER.get(mood, "cyan")
         return Panel(Align.left(body), title=header, subtitle=foot,
                      border_style=f"bold {color}" if flash else color)
 
-    console.print("[bold cyan]Radio karaoke[/]  [dim](listening — v/b nudge, q or Ctrl-C to stop)[/]")
+    console.print(f"[bold cyan]Radio karaoke[/] (session #{session_id})  [dim](listening — v/b nudge, r rec, q to stop)[/]")
     th = threading.Thread(target=identifier, daemon=True)
     th.start()
     try:
@@ -856,6 +924,15 @@ def play_radio_synced(
                 if k:
                     if k in ("q", "\x1b"):
                         break
+                    elif k in ("r", "o", "R", "O"):
+                        if rec_state["is_recording"]:
+                            msg = _stop_recording()
+                            with lock:
+                                state["status"] = msg
+                        else:
+                            ok, msg = _start_recording()
+                            with lock:
+                                state["status"] = msg
                     elif k == "v":  # v = step lyrics one line BACK
                         with lock:
                             times = state["tl"].times
@@ -872,6 +949,9 @@ def play_radio_synced(
         console.print("\n[dim]stopped[/]")
     finally:
         stop.set()
+        if rec_state["is_recording"]:
+            _stop_recording()
+        localcache.finish_radio_session(session_id)
 
 
 def play_spotify_loop(

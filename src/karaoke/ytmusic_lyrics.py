@@ -134,7 +134,8 @@ def read_panel() -> Optional[PanelLyrics]:
     from .player_open import _cdp_send
 
     reply = _cdp_send("Runtime.evaluate",
-                      {"expression": _LYRICS_JS, "returnByValue": True})
+                      {"expression": _LYRICS_JS, "returnByValue": True},
+                      timeout=0.5)
     if not reply:
         return None
     try:

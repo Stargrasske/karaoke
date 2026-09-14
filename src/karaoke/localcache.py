@@ -658,6 +658,82 @@ def tracks_in_genre(genre: str, conn: sqlite3.Connection,
         (genre, limit)).fetchall()
 
 
+def ensure_artist_genres_table(conn: sqlite3.Connection) -> None:
+    """Create the artist genres consensus table in databases predating it."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS artist_genres (
+            artist_normalized TEXT NOT NULL,
+            genre             TEXT NOT NULL,
+            broad_genre       TEXT NOT NULL,
+            weight            REAL NOT NULL DEFAULT 1.0,
+            source            TEXT NOT NULL,
+            fetched_at        REAL NOT NULL,
+            PRIMARY KEY (artist_normalized, genre, broad_genre)
+        );
+        CREATE INDEX IF NOT EXISTS idx_artist_genres_broad ON artist_genres (broad_genre);
+        CREATE INDEX IF NOT EXISTS idx_artist_genres_artist ON artist_genres (artist_normalized);
+    """)
+    conn.commit()
+
+
+def get_artist_genres(artist: str, conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
+    """Retrieve specific genres and canonical broad genres for an artist.
+
+    Returns:
+        (specific_genres, broad_genres)
+    """
+    from .artist_classifier import normalize_artist
+    norm = normalize_artist(artist)
+    if not norm:
+        return ([], [])
+    rows = conn.execute(
+        """
+        SELECT genre, broad_genre FROM artist_genres
+        WHERE artist_normalized = ?
+        ORDER BY weight DESC
+        """,
+        (norm,),
+    ).fetchall()
+    specific: list[str] = []
+    broad: set[str] = set()
+    for r in rows:
+        g = str(r[0]).strip()
+        bg = str(r[1]).strip()
+        if g and g not in specific:
+            specific.append(g)
+        if bg:
+            broad.add(bg)
+    return (specific, sorted(broad))
+
+
+def get_all_artist_genres_map(conn: sqlite3.Connection) -> dict[str, dict[str, list[str]]]:
+    """Pre-fetch all artist genre mappings for fast memory lookup in TUI / indexing.
+
+    Returns:
+        {artist_normalized: {"specific": [genres...], "broad": [broad_genres...]}}
+    """
+    ensure_artist_genres_table(conn)
+    rows = conn.execute(
+        "SELECT artist_normalized, genre, broad_genre FROM artist_genres"
+    ).fetchall()
+    result: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        an = str(r[0])
+        g = str(r[1])
+        bg = str(r[2])
+        if an not in result:
+            result[an] = {"specific": [], "broad": set()}
+        if g and g not in result[an]["specific"]:
+            result[an]["specific"].append(g)
+        if bg:
+            result[an]["broad"].add(bg)
+
+    return {
+        an: {"specific": d["specific"], "broad": sorted(d["broad"])}
+        for an, d in result.items()
+    }
+
+
 def ensure_silence_table(conn: sqlite3.Connection) -> None:
     """Create the recording silence map in databases predating it."""
     conn.executescript("""
@@ -980,6 +1056,129 @@ def ensure_performance_indexes(conn: sqlite3.Connection) -> None:
         log.debug("sqlite index creation skipped: %s", exc)
 
 
+def ensure_queue_schema(conn: sqlite3.Connection) -> None:
+    """Ensure tables exist for active queue state and playback queue events."""
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS active_queue_state (
+                id            INTEGER PRIMARY KEY CHECK (id = 1),
+                playlist_id   TEXT DEFAULT '',
+                name          TEXT DEFAULT '',
+                current_index INTEGER DEFAULT 0,
+                updated_at    REAL NOT NULL,
+                items_json    TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS queue_events (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           REAL NOT NULL,
+                event_type   TEXT NOT NULL,
+                track_id     INTEGER,
+                artist       TEXT DEFAULT '',
+                title        TEXT DEFAULT '',
+                queue_index  INTEGER DEFAULT 0,
+                payload_json TEXT DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_queue_events_ts ON queue_events(ts);
+            """
+        )
+        conn.commit()
+        ensure_saved_searches_and_playlists_schema(conn)
+    except sqlite3.Error as exc:
+        log.debug("queue schema setup skipped: %s", exc)
+
+
+def ensure_saved_searches_and_playlists_schema(conn: sqlite3.Connection) -> None:
+    """Ensure tables exist for saved searches and synced playlists."""
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS saved_searches (
+                query        TEXT PRIMARY KEY COLLATE NOCASE,
+                result_count INTEGER DEFAULT 0,
+                created_at   REAL NOT NULL,
+                last_used_at REAL NOT NULL,
+                use_count    INTEGER DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_searches_last_used ON saved_searches(last_used_at);
+
+            CREATE TABLE IF NOT EXISTS saved_playlists (
+                playlist_id  TEXT PRIMARY KEY,
+                name         TEXT NOT NULL,
+                search_query TEXT DEFAULT '',
+                track_count  INTEGER DEFAULT 0,
+                url          TEXT DEFAULT '',
+                source_kind  TEXT DEFAULT 'youtube_music',
+                created_at   REAL NOT NULL,
+                updated_at   REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_playlists_updated ON saved_playlists(updated_at);
+
+            CREATE TABLE IF NOT EXISTS saved_playlist_tracks (
+                playlist_id TEXT NOT NULL,
+                position    INTEGER NOT NULL,
+                track_id    INTEGER,
+                artist      TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                video_id    TEXT DEFAULT '',
+                url         TEXT DEFAULT '',
+                PRIMARY KEY (playlist_id, position),
+                FOREIGN KEY (playlist_id) REFERENCES saved_playlists(playlist_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_playlist_tracks_pid ON saved_playlist_tracks(playlist_id);
+            """
+        )
+        conn.commit()
+    except sqlite3.Error as exc:
+        log.debug("saved searches and playlists schema setup skipped: %s", exc)
+
+
+def ensure_radio_session_schema(conn: sqlite3.Connection) -> None:
+    """Ensure tables exist for radio sessions and detected session tracks."""
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS radio_sessions (
+                session_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at    REAL NOT NULL,
+                ended_at      REAL,
+                source        TEXT NOT NULL DEFAULT 'mic',
+                is_recording  INTEGER NOT NULL DEFAULT 0,
+                recording_id  INTEGER,
+                track_count   INTEGER NOT NULL DEFAULT 0,
+                status        TEXT NOT NULL DEFAULT 'active',
+                notes         TEXT,
+                FOREIGN KEY(recording_id) REFERENCES recordings(recording_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_radio_sessions_started ON radio_sessions(started_at);
+            CREATE INDEX IF NOT EXISTS idx_radio_sessions_status ON radio_sessions(status);
+
+            CREATE TABLE IF NOT EXISTS radio_session_tracks (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id         INTEGER NOT NULL,
+                artist             TEXT NOT NULL,
+                title              TEXT NOT NULL,
+                first_seen_at      REAL NOT NULL,
+                last_seen_at       REAL NOT NULL,
+                play_count         INTEGER NOT NULL DEFAULT 1,
+                offset_s           REAL,
+                has_synced_lyrics  INTEGER NOT NULL DEFAULT 0,
+                lyric_source       TEXT DEFAULT '',
+                imported           INTEGER NOT NULL DEFAULT 0,
+                imported_track_id  INTEGER,
+                FOREIGN KEY(session_id) REFERENCES radio_sessions(session_id) ON DELETE CASCADE,
+                FOREIGN KEY(imported_track_id) REFERENCES tracks(track_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_radio_session_tracks_sid ON radio_session_tracks(session_id);
+            CREATE INDEX IF NOT EXISTS idx_radio_session_tracks_track ON radio_session_tracks(artist, title);
+            """
+        )
+        conn.commit()
+    except sqlite3.Error as exc:
+        log.debug("radio session schema setup skipped: %s", exc)
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Open (and lazily initialize) the local SQLite database."""
     if db_path is None and settings.uses_postgres:
@@ -1015,9 +1214,13 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     ensure_notes_table(conn)
     ensure_silence_table(conn)
     ensure_genre_table(conn)
+    ensure_artist_genres_table(conn)
     ensure_tone_table(conn)
     ensure_alignment_support_table(conn)
     ensure_performance_indexes(conn)
+    ensure_queue_schema(conn)
+    ensure_saved_searches_and_playlists_schema(conn)
+    ensure_radio_session_schema(conn)
     from .cover_store import ensure_table as _ensure_cover_art
     _ensure_cover_art(conn)
     return conn
@@ -1149,6 +1352,24 @@ def extract_youtube_id(url: str) -> Optional[str]:
         return stem
     if len(url) == 11 and re.match(r"^[a-zA-Z0-9_-]{11}$", url):
         return url
+    return None
+
+
+def extract_playlist_id(url: Optional[str]) -> Optional[str]:
+    """Extract YouTube playlist ID from URL (e.g. from list= parameter) or return None."""
+    if not url:
+        return None
+    import re
+    # Check for list= parameter
+    m = re.search(r"(?:[?&]list=)([^&\s#]+)", url)
+    if m:
+        val = m.group(1).strip()
+        if val and re.match(r"^[a-zA-Z0-9_-]{10,}$", val):
+            return val
+    # Direct playlist ID string if passed directly (starts with standard prefix or is >= 12 chars)
+    trimmed = url.strip()
+    if re.match(r"^(?:PL|RD|OLAK5uy_|VL)[a-zA-Z0-9_-]{10,}$", trimmed):
+        return trimmed
     return None
 
 
@@ -1571,3 +1792,774 @@ def summarize(
         distinct_tracks=distinct_tracks, distinct_artists=distinct_artists,
         top_tracks=top_tracks, top_artists=top_artists, by_mode=by_mode,
     )
+
+
+# -- active queue & rollback persistence --------------------------------------
+
+def save_active_queue(
+    playlist_id: str,
+    name: str,
+    rows: list[dict[str, Any]],
+    current_index: int = 0,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Persist the currently loaded queue to SQLite for instant restoration on reload."""
+    import json
+    import time
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_queue_schema(c)
+        clean_rows = [
+            {
+                "track_id": r.get("track_id"),
+                "artist": r.get("artist") or "",
+                "title": r.get("title") or "",
+                "url": r.get("url") or "",
+                "kind": r.get("kind") or "",
+                "genre": r.get("genre"),
+                "energy": r.get("energy"),
+                "bpm": r.get("bpm"),
+                "key": r.get("key"),
+            }
+            for r in rows
+        ]
+        c.execute(
+            """
+            INSERT INTO active_queue_state (id, playlist_id, name, current_index, updated_at, items_json)
+            VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                playlist_id = excluded.playlist_id,
+                name = excluded.name,
+                current_index = excluded.current_index,
+                updated_at = excluded.updated_at,
+                items_json = excluded.items_json
+            """,
+            (playlist_id, name, current_index, time.time(), json.dumps(clean_rows)),
+        )
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def load_active_queue(conn: Optional[sqlite3.Connection] = None) -> Optional[dict[str, Any]]:
+    """Load the persisted active queue from SQLite, or None if none saved."""
+    import json
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_queue_schema(c)
+        row = c.execute(
+            "SELECT playlist_id, name, current_index, updated_at, items_json FROM active_queue_state WHERE id = 1"
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            items = json.loads(row["items_json"])
+        except Exception:
+            items = []
+        return {
+            "playlist_id": str(row["playlist_id"] or ""),
+            "name": str(row["name"] or ""),
+            "current_index": int(row["current_index"] or 0),
+            "updated_at": float(row["updated_at"] or 0.0),
+            "rows": items,
+        }
+    finally:
+        if own:
+            c.close()
+
+
+def get_last_played_track(conn: Optional[sqlite3.Connection] = None) -> Optional[dict[str, Any]]:
+    """Return the most recently played track from play_events, or None."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        row = c.execute(
+            """
+            SELECT artist, title, mode, source, ts
+            FROM play_events
+            WHERE event = 'play' AND (artist != '' OR title != '')
+            ORDER BY ts DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "artist": str(row["artist"] or ""),
+            "title": str(row["title"] or ""),
+            "mode": str(row["mode"] or ""),
+            "source": str(row["source"] or ""),
+            "ts": float(row["ts"] or 0.0),
+        }
+    finally:
+        if own:
+            c.close()
+
+
+def record_queue_event(
+    event_type: str,
+    track_id: Optional[int] = None,
+    artist: str = "",
+    title: str = "",
+    queue_index: int = 0,
+    metadata: Optional[dict[str, Any]] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Record a queue navigation/playback event for audit and rollback."""
+    import json
+    import time
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_queue_schema(c)
+        cur = c.execute(
+            """
+            INSERT INTO queue_events (ts, event_type, track_id, artist, title, queue_index, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                time.time(),
+                event_type,
+                track_id,
+                artist or "",
+                title or "",
+                queue_index,
+                json.dumps(metadata or {}),
+            ),
+        )
+        c.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        if own:
+            c.close()
+
+
+def get_recent_queue_events(
+    limit: int = 20,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Return recent queue events in reverse chronological order."""
+    import json
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_queue_schema(c)
+        rows = c.execute(
+            """
+            SELECT id, ts, event_type, track_id, artist, title, queue_index, payload_json
+            FROM queue_events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                payload = json.loads(r["payload_json"])
+            except Exception:
+                payload = {}
+            out.append({
+                "id": r["id"],
+                "ts": r["ts"],
+                "event_type": r["event_type"],
+                "track_id": r["track_id"],
+                "artist": r["artist"],
+                "title": r["title"],
+                "queue_index": r["queue_index"],
+                "payload": payload,
+            })
+        return out
+    finally:
+        if own:
+            c.close()
+
+
+def record_search_query(
+    query: str,
+    result_count: int = 0,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Record or update a search query in SQLite."""
+    q = (query or "").strip()
+    if not q or q == "*":
+        return
+    now = time.time()
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        c.execute(
+            """
+            INSERT INTO saved_searches (query, result_count, created_at, last_used_at, use_count)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT(query) DO UPDATE SET
+                query = excluded.query,
+                result_count = excluded.result_count,
+                last_used_at = excluded.last_used_at,
+                use_count = saved_searches.use_count + 1
+            """,
+            (q, result_count, now, now),
+        )
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def get_saved_searches(
+    limit: int = 50,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Return recently used saved search queries."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        rows = c.execute(
+            """
+            SELECT query, result_count, created_at, last_used_at, use_count
+            FROM saved_searches
+            ORDER BY last_used_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "query": r["query"],
+                "result_count": r["result_count"],
+                "created_at": r["created_at"],
+                "last_used_at": r["last_used_at"],
+                "use_count": r["use_count"],
+            }
+            for r in rows
+        ]
+    finally:
+        if own:
+            c.close()
+
+
+def save_playlist(
+    playlist_id: str,
+    name: str,
+    search_query: str = "",
+    tracks: Optional[list[dict[str, Any]]] = None,
+    url: str = "",
+    source_kind: str = "youtube_music",
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Save or update a synced playlist and its tracks in SQLite."""
+    pid = (playlist_id or "").strip()
+    if not pid:
+        return
+    now = time.time()
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        track_count = len(tracks) if tracks is not None else 0
+        c.execute(
+            """
+            INSERT INTO saved_playlists (playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(playlist_id) DO UPDATE SET
+                name = excluded.name,
+                search_query = CASE WHEN excluded.search_query != '' THEN excluded.search_query ELSE saved_playlists.search_query END,
+                track_count = CASE WHEN excluded.track_count > 0 THEN excluded.track_count ELSE saved_playlists.track_count END,
+                url = CASE WHEN excluded.url != '' THEN excluded.url ELSE saved_playlists.url END,
+                source_kind = excluded.source_kind,
+                updated_at = excluded.updated_at
+            """,
+            (pid, name, search_query or "", track_count, url or "", source_kind, now, now),
+        )
+        if tracks is not None:
+            c.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = ?", (pid,))
+            for pos, t in enumerate(tracks, 1):
+                c.execute(
+                    """
+                    INSERT INTO saved_playlist_tracks (playlist_id, position, track_id, artist, title, video_id, url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pid,
+                        t.get("position", pos),
+                        t.get("track_id"),
+                        t.get("artist", "") or "",
+                        t.get("title", "") or "",
+                        t.get("video_id", "") or "",
+                        t.get("url", "") or "",
+                    ),
+                )
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def get_saved_playlists(
+    limit: int = 50,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Return saved playlists ordered by update time."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        rows = c.execute(
+            """
+            SELECT playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at
+            FROM saved_playlists
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "playlist_id": r["playlist_id"],
+                "name": r["name"],
+                "search_query": r["search_query"],
+                "track_count": r["track_count"],
+                "url": r["url"],
+                "source_kind": r["source_kind"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+    finally:
+        if own:
+            c.close()
+
+
+def get_saved_playlist_tracks(
+    playlist_id: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Return tracks for a saved playlist ordered by position."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        rows = c.execute(
+            """
+            SELECT position, track_id, artist, title, video_id, url
+            FROM saved_playlist_tracks
+            WHERE playlist_id = ?
+            ORDER BY position ASC
+            """,
+            (playlist_id,),
+        ).fetchall()
+        return [
+            {
+                "position": r["position"],
+                "track_id": r["track_id"],
+                "artist": r["artist"],
+                "title": r["title"],
+                "video_id": r["video_id"],
+                "url": r["url"],
+            }
+            for r in rows
+        ]
+    finally:
+        if own:
+            c.close()
+
+
+def find_saved_playlist_by_id(
+    playlist_id: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[dict[str, Any]]:
+    """Retrieve a saved playlist by its playlist ID, or None if not found."""
+    if not playlist_id:
+        return None
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        r = c.execute(
+            """
+            SELECT playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at
+            FROM saved_playlists
+            WHERE playlist_id = ?
+            """,
+            (playlist_id,),
+        ).fetchone()
+        if not r:
+            return None
+        return {
+            "playlist_id": r["playlist_id"],
+            "name": r["name"],
+            "search_query": r["search_query"],
+            "track_count": r["track_count"],
+            "url": r["url"],
+            "source_kind": r["source_kind"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+    finally:
+        if own:
+            c.close()
+
+
+def find_playlist_by_video_id(
+    video_id: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Find saved playlists containing a given YouTube video ID."""
+    if not video_id:
+        return []
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        rows = c.execute(
+            """
+            SELECT p.playlist_id, p.name, p.search_query, p.track_count, p.url, p.source_kind,
+                   p.created_at, p.updated_at, pt.position
+            FROM saved_playlists p
+            JOIN saved_playlist_tracks pt ON pt.playlist_id = p.playlist_id
+            WHERE pt.video_id = ?
+            ORDER BY p.updated_at DESC
+            """,
+            (video_id,),
+        ).fetchall()
+        return [
+            {
+                "playlist_id": r["playlist_id"],
+                "name": r["name"],
+                "search_query": r["search_query"],
+                "track_count": r["track_count"],
+                "url": r["url"],
+                "source_kind": r["source_kind"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "position": r["position"],
+            }
+            for r in rows
+        ]
+    finally:
+        if own:
+            c.close()
+
+
+def append_playlist_track(
+    playlist_id: str,
+    track: dict[str, Any],
+    conn: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Append a track to a saved playlist, incrementing track_count and returning new position."""
+    if not playlist_id:
+        return 0
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        row = c.execute(
+            "SELECT COALESCE(MAX(position), 0) AS max_pos FROM saved_playlist_tracks WHERE playlist_id = ?",
+            (playlist_id,),
+        ).fetchone()
+        new_pos = int(row["max_pos"] or 0) + 1
+        now = time.time()
+        c.execute(
+            """
+            INSERT INTO saved_playlist_tracks (playlist_id, position, track_id, artist, title, video_id, url)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                playlist_id,
+                new_pos,
+                track.get("track_id"),
+                str(track.get("artist") or ""),
+                str(track.get("title") or ""),
+                str(track.get("video_id") or ""),
+                str(track.get("url") or ""),
+            ),
+        )
+        c.execute(
+            """
+            UPDATE saved_playlists
+            SET track_count = track_count + 1, updated_at = ?
+            WHERE playlist_id = ?
+            """,
+            (now, playlist_id),
+        )
+        c.commit()
+        return new_pos
+    finally:
+        if own:
+            c.close()
+
+
+def delete_saved_playlist(
+    playlist_id: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Delete a saved playlist and its tracks from SQLite."""
+    if not playlist_id:
+        return
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        c.execute("DELETE FROM saved_playlists WHERE playlist_id = ?", (playlist_id,))
+        c.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def start_radio_session(
+    source: str = "mic",
+    recording_id: Optional[int] = None,
+    is_recording: bool = False,
+    notes: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Create and start a new radio listening session in SQLite."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        started = time.time()
+        cur = c.execute(
+            """
+            INSERT INTO radio_sessions (started_at, source, is_recording, recording_id, status, notes)
+            VALUES (?, ?, ?, ?, 'active', ?)
+            """,
+            (started, source, 1 if is_recording else 0, recording_id, notes),
+        )
+        c.commit()
+        return int(cur.lastrowid)
+    finally:
+        if own:
+            c.close()
+
+
+def record_radio_track(
+    session_id: int,
+    artist: str,
+    title: str,
+    *,
+    offset_s: Optional[float] = None,
+    has_synced: bool = False,
+    lyric_source: str = "",
+    conn: Optional[sqlite3.Connection] = None,
+) -> int:
+    """Record an identified track discovery/event in a radio session."""
+    if not artist and not title:
+        return 0
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        now = time.time()
+        row = c.execute(
+            """
+            SELECT id, play_count FROM radio_session_tracks
+            WHERE session_id = ? AND LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+            """,
+            (session_id, artist, title),
+        ).fetchone()
+        if row:
+            track_entry_id = int(row["id"])
+            c.execute(
+                """
+                UPDATE radio_session_tracks
+                SET last_seen_at = ?, play_count = play_count + 1,
+                    offset_s = COALESCE(?, offset_s),
+                    has_synced_lyrics = MAX(has_synced_lyrics, ?),
+                    lyric_source = CASE WHEN lyric_source != '' THEN lyric_source ELSE ? END
+                WHERE id = ?
+                """,
+                (now, offset_s, 1 if has_synced else 0, lyric_source, track_entry_id),
+            )
+        else:
+            cur = c.execute(
+                """
+                INSERT INTO radio_session_tracks
+                    (session_id, artist, title, first_seen_at, last_seen_at, play_count,
+                     offset_s, has_synced_lyrics, lyric_source)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (session_id, artist, title, now, now, offset_s, 1 if has_synced else 0, lyric_source),
+            )
+            track_entry_id = int(cur.lastrowid)
+            c.execute(
+                "UPDATE radio_sessions SET track_count = track_count + 1 WHERE session_id = ?",
+                (session_id,),
+            )
+        c.commit()
+        return track_entry_id
+    finally:
+        if own:
+            c.close()
+
+
+def update_radio_session_recording(
+    session_id: int,
+    recording_id: Optional[int],
+    is_recording: bool = True,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Update active recording linkage for a radio session."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        c.execute(
+            """
+            UPDATE radio_sessions
+            SET is_recording = ?, recording_id = COALESCE(?, recording_id)
+            WHERE session_id = ?
+            """,
+            (1 if is_recording else 0, recording_id, session_id),
+        )
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def finish_radio_session(
+    session_id: int,
+    status: str = "completed",
+    notes: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Mark a radio session as ended/completed."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        ended = time.time()
+        cur = c.execute(
+            "SELECT COUNT(DISTINCT id) AS cnt FROM radio_session_tracks WHERE session_id = ?",
+            (session_id,),
+        )
+        r = cur.fetchone()
+        cnt = r["cnt"] if r else 0
+        c.execute(
+            """
+            UPDATE radio_sessions
+            SET ended_at = ?, status = ?, track_count = ?,
+                notes = COALESCE(?, notes)
+            WHERE session_id = ?
+            """,
+            (ended, status, cnt, notes, session_id),
+        )
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def get_radio_sessions(
+    limit: int = 50,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Return radio sessions ordered by start time descending."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        rows = c.execute(
+            """
+            SELECT s.session_id, s.started_at, s.ended_at, s.source, s.is_recording,
+                   s.recording_id, s.track_count, s.status, s.notes,
+                   r.dir AS recording_dir, r.status AS recording_status
+            FROM radio_sessions s
+            LEFT JOIN recordings r ON s.recording_id = r.recording_id
+            ORDER BY s.started_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own:
+            c.close()
+
+
+def get_radio_session(
+    session_id: int,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[dict[str, Any]]:
+    """Return metadata for a single radio session."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        row = c.execute(
+            """
+            SELECT s.session_id, s.started_at, s.ended_at, s.source, s.is_recording,
+                   s.recording_id, s.track_count, s.status, s.notes,
+                   r.dir AS recording_dir, r.status AS recording_status
+            FROM radio_sessions s
+            LEFT JOIN recordings r ON s.recording_id = r.recording_id
+            WHERE s.session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        if own:
+            c.close()
+
+
+def get_radio_session_tracks(
+    session_id: int,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Return tracks identified in a radio session."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        rows = c.execute(
+            """
+            SELECT id, session_id, artist, title, first_seen_at, last_seen_at,
+                   play_count, offset_s, has_synced_lyrics, lyric_source,
+                   imported, imported_track_id
+            FROM radio_session_tracks
+            WHERE session_id = ?
+            ORDER BY first_seen_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if own:
+            c.close()
+
+
+def mark_radio_track_imported(
+    session_track_id: int,
+    imported_track_id: int,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """Mark a track in a radio session as imported to library."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_radio_session_schema(c)
+        c.execute(
+            """
+            UPDATE radio_session_tracks
+            SET imported = 1, imported_track_id = ?
+            WHERE id = ?
+            """,
+            (imported_track_id, session_track_id),
+        )
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+

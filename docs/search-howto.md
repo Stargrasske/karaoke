@@ -105,3 +105,35 @@ karaoke-vector-index --rebuild --lines
 make vector-index-dry-run
 make vector-index LINES=1
 ```
+
+---
+
+## 5. Filter-Cached Hybrid Search with Sentiment
+
+Perform hybrid keyword + semantic k-NN vector search filtered by dominant mood using OpenSearch's Lucene filter bitset cache:
+
+```python
+from karaoke import search
+
+# 1. Semantic search with cached mood filter
+hits = search.semantic_search("summer sunshine", k=5, mood="happy")
+
+# 2. Boosted keyword search with cached mood filter
+hits = search.keyword_search("heartbreak memories", k=5, mood="sad")
+
+# 3. Hybrid search (BM25 boosting + k-NN dense vector + filter cache)
+hits = search.hybrid_search("dancing all night", k=5, mood="happy")
+for hit in hits:
+    print(f"{hit.score:.3f} | {hit.artist} - {hit.title} [{hit.dominant_mood}]")
+```
+
+---
+
+## 6. Running Performance Benchmarks
+
+To benchmark search latencies (cold vs. filter-cached warm queries) across your OpenSearch index:
+
+```bash
+python scripts/benchmark_sentiment_search.py
+```
+This tests BM25, filtered keyword, and hybrid vector search queries against `http://localhost:9200/tracks` and prints per-query cold vs. warm cache latencies in milliseconds.

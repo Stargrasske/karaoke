@@ -81,9 +81,17 @@ def _silence_progress_bars() -> None:
     A TUI has nowhere to draw a progress bar anyway.
     """
     import os
+    import threading
 
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     os.environ.setdefault("TQDM_DISABLE", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    try:
+        from tqdm import tqdm
+
+        tqdm.set_lock(threading.RLock())
+    except Exception:
+        pass
     try:
         from transformers.utils import logging as hf_logging
 

@@ -45,9 +45,11 @@ def _get_cached_audio_path(url: str) -> Optional[Path]:
 
 
 def run_download_logic(url: str, cookies_from_browser: Optional[str]) -> Optional[Path]:
-    """Ensure the audio for a YouTube URL is in the cache; download if needed.
+    """Ensure audio for a YouTube or local URL is in the cache; download if needed.
     This function can be called by Celery tasks directly.
     """
+    if url and Path(url).is_file():
+        return Path(url)
     existing = _get_cached_audio_path(url)
     if existing:
         return existing
@@ -114,10 +116,13 @@ def run_timings_logic(track_id: int, conn, cookies_from_browser: Optional[str]) 
             log.info("postprocess: no youtube source + approved lyrics for track %s",
                      track_id)
             return "no-source"
-        res = upgrade_track(row, conn, cookies_from_browser=cookies_from_browser)
+        res = upgrade_track(row, conn, delay=3.0, cookies_from_browser=cookies_from_browser)
         log.info("postprocess: timings upgrade for track %s -> %s", track_id, res.status)
         return res.status
-    except Exception:
+    except Exception as exc:
+        if "rate limited" in str(exc).lower():
+            log.warning("postprocess: rate-limited by YouTube for track %s: %s", track_id, exc)
+            return "rate-limited"
         log.exception("postprocess: timing upgrade failed for track %s", track_id)
         return "error"
 
@@ -153,6 +158,30 @@ def run_sync_logic(track_id: int, audio_path: Path, conn) -> bool:
 
     synced_source = ("whisper_synced" if is_transcribed(row["source"] or "")
                      else "whisper_aligned")
+
+    dur = None
+    try:
+        from mutagen import File as MutagenFile
+        mf = MutagenFile(str(audio_path))
+        if mf and mf.info and hasattr(mf.info, "length") and mf.info.length:
+            dur = float(mf.info.length)
+    except Exception:
+        pass
+    if dur is None:
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            dur = float(res.stdout.strip())
+        except Exception:
+            pass
+    if dur and dur > 900:  # 15 minutes cap for Whisper transcription
+        log.warning("postprocess: skipping sync for track %s, duration %0.1fs exceeds 15min cap",
+                    track_id, dur)
+        return False
 
     try:
         # Tell Whisper the language rather than letting it detect one from the

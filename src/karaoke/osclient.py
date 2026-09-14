@@ -94,6 +94,24 @@ def index_body() -> dict[str, Any]:
                         "engine": "lucene",
                     },
                 },
+                "dominant_mood": {
+                    "type": "keyword",
+                    "fields": {"keyword": {"type": "keyword"}},
+                },
+                "artist_genres": {"type": "keyword"},
+                "broad_genres": {"type": "keyword"},
+                "audio_genre": {"type": "keyword"},
+                "audio_genre_runner_up": {"type": "keyword"},
+                "sentiment_hits": {"type": "integer"},
+                "sentiment_vector": {
+                    "type": "knn_vector",
+                    "dimension": 4,
+                    "method": {
+                        "name": "hnsw",
+                        "space_type": "cosinesimil",
+                        "engine": "lucene",
+                    },
+                },
                 "indexed_at": {"type": "date"},
             }
         },

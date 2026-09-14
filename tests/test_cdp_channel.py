@@ -219,3 +219,19 @@ def test_the_channel_restarts_after_being_closed(monkeypatch, channel):
     channel.send("Page.navigate", {})
     channel.close()
     assert channel.send("Page.navigate", {}) is not None
+
+
+def test_cooldown_skips_further_calls_until_expired(monkeypatch, channel):
+    """After a timeout or error, subsequent calls return None immediately without waiting."""
+    socket = FakeSocket(hang=True)
+    install_fake_websockets(monkeypatch, socket)
+
+    # First call times out and trips the cooldown
+    assert channel.send("Page.navigate", {}, timeout=0.05) is None
+    assert channel._failed_until > 0
+
+    # Subsequent call without force returns None immediately
+    assert channel.send("Page.navigate", {}, timeout=1.0) is None
+    # With force=True it attempts even during cooldown
+    assert channel.send("Page.navigate", {}, timeout=0.05, force=True) is None
+

@@ -239,9 +239,9 @@ def _base_cmd(player: str = "") -> list[str]:
     return cmd
 
 
-def position(player: str = "") -> Optional[float]:
+def position(player: str = "", *, timeout: float = 0.5) -> Optional[float]:
     """Current playback position in seconds for the (targeted) player."""
-    out = _run(_base_cmd(player) + ["position"])
+    out = _run(_base_cmd(player) + ["position"], timeout=timeout)
     if out is None:
         return None
     try:

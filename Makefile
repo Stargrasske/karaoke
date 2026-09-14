@@ -30,13 +30,13 @@ K8S_NAMESPACE ?= karaoke
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv install install-confluence docs docs-live docs-write docs-confluence-prep \
+.PHONY: help venv install install-confluence docs docs-live docs-write docs-audit docs-sync docs-confluence-prep \
         docs-confluence-publish deps-make2graph view_makeflow lint format \
         test test-audio mic-test stats clean clean-tools browse tui browse-log \
         install-audio analyze api ctrl-api \
         k8s-build k8s-load k8s-deploy k8s-seed-db k8s-status k8s-logs k8s-undeploy \
         upgrade-timings upgrade-timings-dry-run \
-        index-youtube-cache db-cleanup db-cleanup-dry-run vector-index vector-index-dry-run folder-scan \
+        index-youtube-cache db-cleanup db-cleanup-dry-run vector-index vector-index-dry-run vector-status folder-scan \
         mq-port-forward postprocess-worker celery-worker celery-flower postprocess-enqueue-all \
         systemd-install systemd-uninstall systemd-up systemd-down systemd-status health \
         auth-spotify auth-youtube auth-status sample audio-check \
@@ -80,6 +80,12 @@ docs: ## Build MkDocs site
 
 docs-live: ## Serve MkDocs locally on http://$(DOCS_ADDR)
 	$(MKDOCS) serve --dev-addr $(DOCS_ADDR)
+
+docs-audit: ## Audit documentation for drift (modules, unlinked docs, targets)
+	$(PYTHON) scripts/doc_sync.py --check
+
+docs-sync: ## Auto-sync documentation (API modules and Makefile targets)
+	$(PYTHON) scripts/doc_sync.py --fix
 
 docs-write: deps-make2graph ## Regenerate generated docs
 	@mkdir -p docs/generated docs/assets || true
@@ -319,3 +325,6 @@ systemd-status: ## Show status of all karaoke units + last health check
 
 vector-index: ## Rebuild OpenSearch vector indexes from SQLite (set LINES=1 for line docs)
 	$(PYTHON) -m karaoke.vector_index --rebuild $(if $(LINES),--lines,)
+
+vector-status: ## Show OpenSearch vector index status and rebuild progress
+	$(PYTHON) -m karaoke.vector_index --status

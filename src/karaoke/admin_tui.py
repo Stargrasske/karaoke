@@ -14,6 +14,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.screen import ModalScreen
 from textual.widgets import Header, Footer, DataTable, Static, Button, Input, RichLog
 from textual.containers import Vertical, Horizontal, Container
 from textual import log as textual_log
@@ -21,12 +22,216 @@ from textual import log as textual_log
 from .api_client import ApiClient
 from .logger import LOG_FILE, log
 
-__all__ = ["KaraokeAdminApp", "admin_main"]
+__all__ = ["KaraokeAdminApp", "RecordingBrowseModal", "admin_main"]
 
 
 def markup_text(value: Any) -> str:
     """Escape dynamic text written to RichLog/Static with markup enabled."""
     return str(value).replace("[", r"\[")
+
+
+class RecordingBrowseModal(ModalScreen[None]):
+    """Browse what an audio recording session captured in detail."""
+
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        ("B", "dismiss", "Close"),
+        ("q", "dismiss", "Close"),
+        ("P", "play_track", "Play in Browser"),
+        ("A", "analyse_session", "Analyse Session"),
+    ]
+
+    def __init__(self, recording_id: int, *, app_ref: Any = None) -> None:
+        super().__init__()
+        self.recording_id = recording_id
+        self.app_ref = app_ref
+        self._rows: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="rec-dialog") as dialog:
+            dialog.border_title = f"Recording #{self.recording_id}"
+            dialog.border_subtitle = "P: play in browser · A: analyse session · Esc / B / q: close"
+            yield DataTable(id="rec-table", cursor_type="row")
+            yield Static("", id="rec-hint")
+            with Horizontal(id="rec-controls"):
+                yield Button("Play in Browser (P)", id="btn-modal-play", variant="primary")
+                yield Button("Analyse Session (A)", id="btn-modal-analyse", variant="warning")
+                yield Button("Close (Esc)", id="btn-modal-close", variant="default")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#rec-table", DataTable)
+        table.add_columns("#", "At", "Artist", "Title", "Duration", "Status")
+        self._load_tracks()
+
+    def _load_tracks(self) -> None:
+        from . import recording_audio
+        try:
+            self._rows = recording_audio.browse_rows(self.recording_id)
+        except Exception as exc:
+            log.debug("failed to browse rows for rec %s: %s", self.recording_id, exc)
+            self._rows = []
+
+        table = self.query_one("#rec-table", DataTable)
+        table.clear()
+        for r in self._rows:
+            mins, secs = divmod(int(max(0.0, r.get("duration_s") or 0.0)), 60)
+            dur_str = f"{mins}:{secs:02d}"
+            wall = r.get("start_wall") or 0.0
+            time_str = time.strftime("%H:%M:%S", time.localtime(wall)) if wall else "—"
+
+            st_parts = []
+            if not r.get("playable"):
+                st_parts.append("[dim]unplayable[/dim]")
+            elif r.get("silent"):
+                st_parts.append("[dim yellow]silent[/dim yellow]")
+            elif r.get("confident"):
+                st_parts.append("[bold green]confident[/bold green]")
+            else:
+                st_parts.append("[cyan]identified[/cyan]")
+            st_str = " · ".join(st_parts)
+
+            table.add_row(
+                str(r.get("index", 0) + 1),
+                time_str,
+                r.get("artist") or "Unknown",
+                r.get("title") or "Unknown",
+                dur_str,
+                st_str,
+                key=str(r.get("index", 0)),
+            )
+
+        playable = sum(1 for r in self._rows if r.get("playable") and not r.get("silent"))
+        hint = self.query_one("#rec-hint", Static)
+        hint.update(
+            f"Recording #{self.recording_id}: {len(self._rows)} track(s) captured, "
+            f"{playable} playable"
+        )
+
+    def _play_track(self, index: int) -> None:
+        from . import recording_audio, player_open
+        row = next((r for r in self._rows if r.get("index") == index), None)
+        if row is None:
+            return
+        if not row.get("playable"):
+            self.notify("Track audio is pruned or unavailable", severity="warning")
+            return
+        url = recording_audio.track_url(self.recording_id, index)
+        try:
+            player_open.open_song_url(url, "recording")
+            self.notify(f"Playing track #{index + 1}: {row.get('artist')} - {row.get('title')}")
+        except Exception as exc:
+            self.notify(f"Could not open track in player: {exc}", severity="error")
+
+    def action_play_track(self) -> None:
+        table = self.query_one("#rec-table", DataTable)
+        if 0 <= table.cursor_row < len(self._rows):
+            idx = self._rows[table.cursor_row].get("index", table.cursor_row)
+            self._play_track(idx)
+        else:
+            self.notify("Select a track to play", severity="warning")
+
+    def action_analyse_session(self) -> None:
+        self.dismiss()
+        if self.app_ref and hasattr(self.app_ref, "_process_selected_recording"):
+            self.app_ref._process_selected_recording(self.recording_id)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if event.data_table.id == "rec-table":
+            try:
+                idx = int(event.row_key.value)
+                self._play_track(idx)
+            except Exception:
+                pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-modal-play":
+            self.action_play_track()
+        elif bid == "btn-modal-analyse":
+            self.action_analyse_session()
+        elif bid == "btn-modal-close":
+            self.dismiss()
+
+
+class RadioSessionsModal(ModalScreen):
+    """Browse radio listening sessions (with/without recordings) and trigger library import."""
+
+    BINDINGS = [
+        ("escape", "dismiss", "Close"),
+        ("q", "dismiss", "Close"),
+        ("I", "import_selected_session", "Import Session"),
+        ("i", "import_selected_session", "Import Session"),
+    ]
+
+    def __init__(self, app_ref=None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.app_ref = app_ref
+        self._sessions = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="rec-dialog") as dialog:
+            dialog.border_title = "Radio Listening Sessions"
+            dialog.border_subtitle = "I: import session to library · Esc / q: close"
+            yield DataTable(id="radio-table", cursor_type="row")
+            yield Static("", id="radio-hint")
+            with Horizontal(id="rec-controls"):
+                yield Button("Import Session (I)", id="btn-modal-import-radio", variant="success")
+                yield Button("Close (Esc)", id="btn-modal-close", variant="default")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#radio-table", DataTable)
+        table.add_columns("ID", "Started", "Duration", "Source", "Tracks", "Audio / REC", "Status")
+        self._load_sessions()
+
+    def _load_sessions(self) -> None:
+        try:
+            from . import localcache
+            self._sessions = localcache.get_radio_sessions(limit=50)
+        except Exception as exc:
+            log.debug("failed to load radio sessions: %s", exc)
+            self._sessions = []
+
+        table = self.query_one("#radio-table", DataTable)
+        table.clear()
+        now = time.time()
+        for s in self._sessions:
+            started = time.strftime("%Y-%m-%d %H:%M", time.localtime(s["started_at"]))
+            if s.get("ended_at"):
+                elapsed_s = s["ended_at"] - s["started_at"]
+                dur = f"{int(elapsed_s // 60)}m {int(elapsed_s % 60)}s"
+            else:
+                dur = f"{int((now - s['started_at']) // 60)}m (active)"
+
+            rec = f"REC #{s['recording_id']}" if s.get("is_recording") and s.get("recording_id") else "no audio"
+            table.add_row(
+                str(s["session_id"]),
+                started,
+                dur,
+                str(s.get("source") or "mic"),
+                str(s.get("track_count") or 0),
+                rec,
+                str(s.get("status") or "active"),
+                key=str(s["session_id"]),
+            )
+        hint = self.query_one("#radio-hint", Static)
+        hint.update(f"Loaded {len(self._sessions)} radio sessions. Select a session and press I to import to library.")
+
+    def action_import_selected_session(self) -> None:
+        table = self.query_one("#radio-table", DataTable)
+        if 0 <= table.cursor_row < len(self._sessions):
+            sess = self._sessions[table.cursor_row]
+            sid = sess["session_id"]
+            self.dismiss()
+            if self.app_ref and hasattr(self.app_ref, "_import_radio_session_worker"):
+                self.app_ref._import_radio_session_worker(sid)
+        else:
+            self.notify("Select a radio session to import", severity="warning")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-modal-import-radio":
+            self.action_import_selected_session()
+        elif event.button.id == "btn-modal-close":
+            self.dismiss()
 
 
 class KaraokeAdminApp(App):
@@ -85,16 +290,16 @@ class KaraokeAdminApp(App):
     }
 
     #worker-container, #pipeline-container, #align-container,
-    #ingest-container, #clients-container {
+    #ingest-container, #clients-container, #recordings-container {
         border: round $primary;
         padding: 0 1;
         margin-bottom: 1;
         height: auto;
     }
 
-    #worker-title, #clients-title { text-style: bold; }
-    #worker-controls, #pipeline-controls { height: auto; margin-bottom: 1; }
-    #worker-controls Button, #pipeline-controls Button { margin-right: 1; }
+    #worker-title, #clients-title, #recordings-title { text-style: bold; }
+    #worker-controls, #pipeline-controls, #recording-controls { height: auto; margin-bottom: 1; }
+    #worker-controls Button, #pipeline-controls Button, #recording-controls Button { margin-right: 1; }
 
     #worker-table { height: 5; margin-bottom: 1; }
     #worker-summary { height: auto; color: $text-muted; }
@@ -106,15 +311,9 @@ class KaraokeAdminApp(App):
     #align-container Horizontal, #ingest-container Horizontal { height: auto; }
     #align-container Input, #ingest-container Input { margin-right: 1; }
 
-    #recordings-container {
-        border: round $primary;
-        padding: 0 1;
-        margin-bottom: 1;
-        height: auto;
-    }
-
     #recordings-table {
-        height: 5;
+        height: 6;
+        margin-bottom: 1;
     }
 
     #recordings-summary {
@@ -133,6 +332,17 @@ class KaraokeAdminApp(App):
     #record-panel.-on {
         display: block;
     }
+
+    RecordingBrowseModal { align: center middle; }
+    #rec-dialog {
+        width: 100; height: auto; max-height: 90%;
+        border: thick $accent; padding: 1 2; background: $surface;
+        border-title-align: center;
+    }
+    #rec-table { height: auto; max-height: 20; margin-bottom: 1; }
+    #rec-hint { color: $text-muted; height: 1; margin-bottom: 1; }
+    #rec-controls { height: auto; }
+    #rec-controls Button { margin-right: 1; }
     """
 
 
@@ -156,6 +366,8 @@ class KaraokeAdminApp(App):
         ("X", "shutdown_webui", "Stop Web UI"),
         ("K", "restart_kiosk", "Restart Kiosk Chrome"),
         ("O", "toggle_record", "Toggle Live Recording"),
+        ("B", "browse_selected_recording", "Browse Recording"),
+        ("I", "show_radio_sessions", "Radio Sessions"),
     ]
 
     def __init__(self):
@@ -238,12 +450,15 @@ class KaraokeAdminApp(App):
                     yield DataTable(id="clients-table", cursor_type="row")
                     yield Static("Clients: Loading...", id="clients-summary")
 
-                # Live Recording Panel Indicator
-                yield Static("", id="record-panel")
-
-                # Recordings Management Panel
+                # Live Recording & Captured Audio Sessions Panel
                 with Container(id="recordings-container"):
-                    yield Static("[bold cyan]Recent Audio Recordings (Press Enter to process)[/bold cyan]")
+                    yield Static("[bold cyan]Live Recording & Session Capture[/bold cyan]", id="recordings-title")
+                    with Horizontal(id="recording-controls"):
+                        yield Button("Start Live Recording (O)", id="btn-record", variant="success")
+                        yield Button("Browse / Inspect (B)", id="btn-browse-recordings", variant="default")
+                        yield Button("Analyse All Recordings (a)", id="btn-recordings", variant="primary")
+                        yield Button("Radio Sessions (I)", id="btn-radio-sessions", variant="default")
+                    yield Static("", id="record-panel")
                     yield DataTable(id="recordings-table", cursor_type="row")
                     yield Static("Recordings: Loading...", id="recordings-summary")
 
@@ -253,8 +468,6 @@ class KaraokeAdminApp(App):
                     with Horizontal(id="pipeline-controls"):
                         yield Button("Run Audio Backfill (b)", id="btn-backfill", variant="success")
                         yield Button("Rebuild Vectors (v)", id="btn-rebuild-vectors", variant="primary")
-                        yield Button("Analyse Recordings (a)", id="btn-recordings", variant="warning")
-                        yield Button("Toggle Record (O)", id="btn-record", variant="error")
 
                 # Whisper Plain Lyrics Alignment Panel
                 with Container(id="align-container"):
@@ -547,7 +760,7 @@ class KaraokeAdminApp(App):
         self._record_tick += 1
         try:
             st = self.api.record_status()
-            sessions = st.get("sessions", []) if isinstance(st, dict) else []
+            sessions = (st.get("recording") or st.get("sessions") or []) if isinstance(st, dict) else []
             active_id = None
             active_item = None
             for s in sessions:
@@ -562,7 +775,7 @@ class KaraokeAdminApp(App):
                 btn.label = f"Stop Record #{active_id} (O)"
                 btn.variant = "error"
             else:
-                btn.label = "Toggle Record (O)"
+                btn.label = "Start Live Recording (O)"
                 btn.variant = "success"
 
             panel = self.query_one("#record-panel", Static)
@@ -588,7 +801,7 @@ class KaraokeAdminApp(App):
         if self._recording_id is None:
             try:
                 st = self.api.record_status()
-                sessions = st.get("sessions", []) if isinstance(st, dict) else []
+                sessions = (st.get("recording") or st.get("sessions") or []) if isinstance(st, dict) else []
                 for s in sessions:
                     if s.get("recording_id"):
                         self._recording_id = int(s["recording_id"])
@@ -607,6 +820,9 @@ class KaraokeAdminApp(App):
             self.notify(f"Recording {stopped_id} stopped ({recorded}/{total} tracks identified)")
             self._recording_id = None
             self.refresh_record_status()
+            self.refresh_recordings()
+            if recorded > 0:
+                self._process_selected_recording(stopped_id)
             return
 
         result = self.api.record_start()
@@ -622,6 +838,7 @@ class KaraokeAdminApp(App):
         else:
             self.notify(f"Recording {self._recording_id} to {directory}")
         self.refresh_record_status()
+        self.refresh_recordings()
 
     def action_scale_up(self) -> None:
         self._target_workers = 1
@@ -885,6 +1102,10 @@ class KaraokeAdminApp(App):
             self.action_analyse_recordings()
         elif bid == "btn-record":
             self.action_toggle_record()
+        elif bid == "btn-browse-recordings":
+            self.action_browse_selected_recording()
+        elif bid == "btn-radio-sessions":
+            self.action_show_radio_sessions()
         elif bid == "btn-align":
             self.action_align_whisper()
         elif bid == "btn-scan":
@@ -1006,7 +1227,74 @@ class KaraokeAdminApp(App):
                 self.call_from_thread(self._mark_task_finished, label, msg, severity="error")
             finally:
                 self.call_from_thread(self._release_bg_lock)
-        self.run_worker(_bg, thread=True)
+        try:
+            if hasattr(self, "_thread_id"):
+                self.run_worker(_bg, thread=True)
+            else:
+                self._release_bg_lock()
+        except Exception as exc:
+            log.debug("Could not start background worker for recording %s: %s", rid, exc)
+            self._release_bg_lock()
+
+    def action_browse_selected_recording(self) -> None:
+        """`B`: Browse the selected or latest recording session in detail."""
+        rid = None
+        try:
+            table = self.query_one("#recordings-table", DataTable)
+            if table.row_count > 0:
+                row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+                rid = getattr(self, "_recording_rows", {}).get(row_key)
+        except Exception:
+            pass
+
+        if rid is None:
+            if self._recording_id is not None:
+                rid = self._recording_id
+            elif getattr(self, "_recording_rows", None):
+                rid = next(iter(self._recording_rows.values()))
+
+        if rid is None:
+            self.notify("No recording session available to browse", severity="warning")
+            return
+
+        self.push_screen(RecordingBrowseModal(rid, app_ref=self))
+
+    def action_show_radio_sessions(self) -> None:
+        """`I`: Open the radio listening sessions manager & import modal."""
+        self.push_screen(RadioSessionsModal(app_ref=self))
+
+    def _import_radio_session_worker(self, session_id: int) -> None:
+        """Import tracks and audio from a radio session in a background worker."""
+        if not self._acquire_bg_lock():
+            return
+        label = f"Import radio session #{session_id}"
+        self._mark_task_started(label)
+        self.notify(f"Importing radio session #{session_id} into library...")
+
+        def _bg():
+            try:
+                from . import radio_pipeline, vector_index
+                res = radio_pipeline.import_radio_session(session_id)
+                msg = f"Imported {res.get('imported_tracks', 0)} tracks ({res.get('audio_slices', 0)} audio slices) from radio session #{session_id}"
+                self.call_from_thread(self.notify, msg)
+                self.call_from_thread(self._mark_task_finished, label, msg)
+                vector_index.rebuild_from_sqlite(embed=True, include_lines=True)
+                self.call_from_thread(self.refresh_recordings)
+            except Exception as exc:
+                msg = f"Import of radio session #{session_id} failed: {exc}"
+                self.call_from_thread(self.notify, msg, severity="error")
+                self.call_from_thread(self._mark_task_finished, label, msg, severity="error")
+            finally:
+                self.call_from_thread(self._release_bg_lock)
+
+        try:
+            if hasattr(self, "_thread_id"):
+                self.run_worker(_bg, thread=True)
+            else:
+                self._release_bg_lock()
+        except Exception as exc:
+            log.debug("Could not run radio import worker for session %s: %s", session_id, exc)
+            self._release_bg_lock()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle row selection inside any DataTable."""
@@ -1015,7 +1303,7 @@ class KaraokeAdminApp(App):
             row_key = event.row_key
             rid = getattr(self, "_recording_rows", {}).get(row_key)
             if rid is not None:
-                self._process_selected_recording(rid)
+                self.push_screen(RecordingBrowseModal(rid, app_ref=self))
 
 
 def short_source(name: str, width: int = 26) -> str:

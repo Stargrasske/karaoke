@@ -400,4 +400,6 @@ def test_untrusted_words_are_dropped_from_the_stream():
 def test_line_weight_respects_commas_and_breaks():
     w_plain = la.line_weight("where mister when you are gone")
     w_comma = la.line_weight("where, mister, when you are gone")
+    w_excl = la.line_weight("where! mister! when you are gone!")
     assert w_comma > w_plain
+    assert w_excl > w_plain

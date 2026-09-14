@@ -102,10 +102,11 @@ def health() -> dict[str, Any]:
 @app.get("/api/tracks", response_model=list[TrackResponse])
 def list_tracks(
     q: Optional[str] = Query(None, description="Search query for artist or title"),
+    genre: Optional[str] = Query(None, description="Filter by genre"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ) -> list[dict[str, Any]]:
-    """List tracks in the local library with optional search filtering."""
+    """List tracks in the local library with optional search and genre filtering."""
     with localcache.connect() as conn:
         from .track_analysis import ensure_schema
         ensure_schema(conn)
@@ -135,28 +136,28 @@ def list_tracks(
             LEFT JOIN track_analysis a ON a.track_id = t.track_id
             LEFT JOIN track_genre g ON g.track_id = t.track_id
         """
+        where_clauses = []
+        params: list[Any] = []
         if q:
             pattern = f"%{q.strip()}%"
-            cur.execute(
-                base
-                + """
-                WHERE t.artist LIKE ? OR t.title LIKE ?
-                GROUP BY t.track_id
-                ORDER BY t.artist, t.title
-                LIMIT ? OFFSET ?
-                """,
-                (pattern, pattern, limit, offset),
-            )
-        else:
-            cur.execute(
-                base
-                + """
-                GROUP BY t.track_id
-                ORDER BY t.artist, t.title
-                LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            )
+            where_clauses.append("(t.artist LIKE ? OR t.title LIKE ? OR t.album LIKE ?)")
+            params.extend([pattern, pattern, pattern])
+        if genre and genre.strip().lower() != "all":
+            where_clauses.append("LOWER(TRIM(g.genre)) = LOWER(TRIM(?))")
+            params.append(genre.strip())
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        sql = (
+            base
+            + f"""
+            {where_sql}
+            GROUP BY t.track_id
+            ORDER BY t.artist, t.title
+            LIMIT ? OFFSET ?
+            """
+        )
+        params.extend([limit, offset])
+        cur.execute(sql, params)
         return [
             {
                 "track_id": row["track_id"],
@@ -467,6 +468,25 @@ def update_recording(recording_id: int, req: UpdateRecordingRequest) -> dict[str
     }
 
 
+@app.get("/api/radio/sessions")
+def get_radio_sessions(limit: int = 50) -> dict[str, Any]:
+    """List radio listening sessions with metadata and recording details."""
+    with localcache.connect() as conn:
+        sessions = localcache.get_radio_sessions(limit=limit, conn=conn)
+        return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.get("/api/radio/sessions/{session_id}")
+def get_radio_session_detail(session_id: int) -> dict[str, Any]:
+    """Get metadata and discovered tracks for a specific radio session."""
+    with localcache.connect() as conn:
+        session = localcache.get_radio_session(session_id, conn=conn)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Radio session not found")
+        tracks = localcache.get_radio_session_tracks(session_id, conn=conn)
+        return {"session": session, "tracks": tracks, "count": len(tracks)}
+
+
 @app.get("/api/workers")
 def get_workers() -> dict[str, Any]:
     """Post-processing worker and queue statistics.
@@ -533,6 +553,30 @@ def suggest_queue(req: QueueSuggestRequest) -> list[dict[str, Any]]:
 
     suggestions = queue_suggest.suggest_for_queue(
         req.track_ids, limit=req.limit, per_artist=req.per_artist)
+    if not suggestions:
+        return []
+    with localcache.connect() as conn:
+        out: list[dict[str, Any]] = []
+        for s in suggestions:
+            out.append({
+                "track_id": s.track_id,
+                "artist": s.artist,
+                "title": s.title,
+                "score": s.score,
+                "seeds_matched": s.seeds_matched,
+                "space": s.space,
+                "url": queue_suggest.playable_url(s.track_id, conn),
+            })
+    return out
+
+
+@app.get("/api/tracks/{track_id}/sounds-like", response_model=list[SuggestionResponse])
+def sounds_like_track(track_id: int, limit: int = Query(10, ge=1, le=50),
+                      per_artist: int = Query(2, ge=1, le=10)) -> list[dict[str, Any]]:
+    """Return tracks that acoustically sound like the given track via CLAP similarity."""
+    from . import queue_suggest
+
+    suggestions = queue_suggest.suggest_for_track(track_id, limit=limit, per_artist=per_artist)
     if not suggestions:
         return []
     with localcache.connect() as conn:

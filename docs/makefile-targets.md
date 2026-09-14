@@ -1,7 +1,6 @@
 # Makefile targets
 Generated from make help
 ```text
-make[1]: Entering directory '/home/tina/karaoke'
 admin                        Run the backend operations & worker management TUI
 analyze                      Detect + store key/BPM for a file (FILE=... ARTIST=... TITLE=...)
 api                          Launch the FastAPI library backend (read-only: tracks, lyrics, stats)
@@ -16,22 +15,24 @@ celery-worker                Run the Celery post-processing worker (CLAP/audio s
 clean                        Remove build artifacts
 clean-tools                  Remove cached helper tools
 ctrl-api                     Launch the host-side control API (playback; needs a desktop session)
-db-cleanup-dry-run           Preview duplicate-track merges without writing anything
 db-cleanup                   Run track deduplication (fuzzy title + duration guard), orphan source auto-fill, and cache healing
+db-cleanup-dry-run           Preview duplicate-track merges without writing anything
 deps-make2graph              Fetch and build makefile2graph locally
 docs                         Build MkDocs site
+docs-audit                   Audit documentation for drift (modules, unlinked docs, targets)
 docs-confluence-prep         Generate Confluence-friendly docs tree
 docs-confluence-publish      Build Confluence export site
 docs-live                    Serve MkDocs locally on http://$(DOCS_ADDR)
+docs-sync                    Auto-sync documentation (API modules and Makefile targets)
 docs-write                   Regenerate generated docs
 folder-scan                  Scan a music folder: fingerprint, classify, resolve YT/Spotify, ingest (DIR=... LIMIT=... DRY_RUN=1)
 format                       Run formatters
 health                       Run the karaoke platform health check (services, ports, cluster, DB)
 help                         Show available targets
 index-youtube-cache          Add cached YouTube downloads to SQLite so they show in browse
+install                      Install dependencies and the karaoke package
 install-audio                Install the isolated key/tempo analysis stack (essentia, librosa) into $(AUDIO_VENV)
 install-confluence           Install optional Confluence publishing dependencies
-install                      Install dependencies and the karaoke package
 k8s-build                    Build the library API container image
 k8s-deploy                   Deploy the library API to the kind cluster
 k8s-load                     Load the image into the kind cluster
@@ -55,16 +56,16 @@ systemd-install              Install/refresh the karaoke systemd --user units (s
 systemd-status               Show status of all karaoke units + last health check
 systemd-uninstall            Stop and remove the karaoke systemd --user units
 systemd-up                   Start all karaoke services via the target
-test-audio                   Verify the audio + identify + lyrics stack (mic, songrec, LRCLIB)
 test                         Run tests
+test-audio                   Verify the audio + identify + lyrics stack (mic, songrec, LRCLIB)
 tui                          Launch the clean karaoke control-surface TUI prototype
-upgrade-timings-dry-run      Preview which cached tracks can gain word-level timing
 upgrade-timings              Upgrade cached lyrics to word-level timing via YouTube captions
-vector-index-dry-run         Preview SQLite -> OpenSearch vector indexing without writing
+upgrade-timings-dry-run      Preview which cached tracks can gain word-level timing
 vector-index                 Rebuild OpenSearch vector indexes from SQLite (set LINES=1 for line docs)
+vector-index-dry-run         Preview SQLite -> OpenSearch vector indexing without writing
+vector-status                Show OpenSearch vector index status and rebuild progress
 venv                         Create virtual environment
 view_makeflow                Open generated SVG locally
 web                          Serve the TUI in a web browser using textual-serve
 webtui                       Alias for make web
-make[1]: Leaving directory '/home/tina/karaoke'
 ```

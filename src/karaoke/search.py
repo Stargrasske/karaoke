@@ -1,7 +1,7 @@
 """Semantic + keyword search over the tracks index."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .config import settings
@@ -28,6 +28,10 @@ class SearchHit:
     # on the hit so a caller can say so, instead of every caller having to know
     # which source strings mean "transcribed".
     transcribed: bool = False
+    dominant_mood: str = "neutral"
+    broad_genres: list[str] = field(default_factory=list)
+    artist_genres: list[str] = field(default_factory=list)
+    audio_genre: str = ""
 
 
 def _hit(raw: dict[str, Any]) -> SearchHit:
@@ -41,36 +45,112 @@ def _hit(raw: dict[str, Any]) -> SearchHit:
         has_synced=bool(s.get("has_synced")),
         path=s.get("path"),
         transcribed=is_transcribed(s.get("lyrics_source", "")),
+        dominant_mood=s.get("dominant_mood") or "neutral",
+        broad_genres=list(s.get("broad_genres") or []),
+        artist_genres=list(s.get("artist_genres") or []),
+        audio_genre=str(s.get("audio_genre") or ""),
     )
 
 
-def semantic_search(query: str, k: int = 5, os_client: Any = None) -> list[SearchHit]:
+def _mood_filter(mood: str) -> dict[str, Any]:
+    val = mood.strip().lower()
+    return {
+        "bool": {
+            "should": [
+                {"term": {"dominant_mood": val}},
+                {"term": {"dominant_mood.keyword": val}},
+            ],
+            "minimum_should_match": 1,
+        }
+    }
+
+
+def _genre_filter(genre: str) -> dict[str, Any]:
+    val = genre.strip().lower()
+    return {
+        "bool": {
+            "should": [
+                {"term": {"broad_genres": val}},
+                {"term": {"artist_genres": val}},
+                {"term": {"audio_genre": val}},
+            ],
+            "minimum_should_match": 1,
+        }
+    }
+
+
+def semantic_search(
+    query: str,
+    k: int = 5,
+    mood: Optional[str] = None,
+    genre: Optional[str] = None,
+    os_client: Any = None,
+) -> list[SearchHit]:
     """kNN search over lyric vectors: 'find the song that goes like ...'."""
     from .embed import embed_text
     from .osclient import client
 
     c = os_client or client()
     vec = embed_text(query)
-    body = {"size": k, "query": {"knn": {"lyrics_vector": {"vector": vec, "k": k}}}}
+    knn_clause: dict[str, Any] = {"vector": vec, "k": k}
+    filters: list[dict[str, Any]] = []
+    if mood:
+        filters.append(_mood_filter(mood))
+    if genre and genre.strip().lower() != "all":
+        filters.append(_genre_filter(genre))
+    if len(filters) == 1:
+        knn_clause["filter"] = filters[0]
+    elif len(filters) > 1:
+        knn_clause["filter"] = {"bool": {"filter": filters}}
+
+    body = {"size": k, "query": {"knn": {"lyrics_vector": knn_clause}}}
     res = c.search(index=settings.index_name, body=body)
     return [_hit(h) for h in res["hits"]["hits"]]
 
 
-def keyword_search(query: str, k: int = 5, os_client: Any = None) -> list[SearchHit]:
-    """Full-text search across title/artist/album/plain lyrics."""
+def keyword_search(
+    query: str,
+    k: int = 5,
+    mood: Optional[str] = None,
+    genre: Optional[str] = None,
+    os_client: Any = None,
+) -> list[SearchHit]:
+    """Full-text search across title/artist/broad_genres/artist_genres/audio_genre/album/plain lyrics."""
     from .osclient import client
 
     c = os_client or client()
+    positive: dict[str, Any] = {
+        "multi_match": {
+            "query": query,
+            "fields": [
+                "title^2.5",
+                "artist^2.0",
+                "broad_genres^2.0",
+                "artist_genres^1.5",
+                "audio_genre^1.0",
+                "album",
+                "plain_lyrics^0.5",
+            ],
+        }
+    }
+    filters: list[dict[str, Any]] = []
+    if mood:
+        filters.append(_mood_filter(mood))
+    if genre and genre.strip().lower() != "all":
+        filters.append(_genre_filter(genre))
+
+    if filters:
+        positive = {
+            "bool": {
+                "must": positive,
+                "filter": filters,
+            }
+        }
     body = {
         "size": k,
         "query": {
             "boosting": {
-                "positive": {
-                    "multi_match": {
-                        "query": query,
-                        "fields": ["title^2", "artist^2", "album", "plain_lyrics"],
-                    }
-                },
+                "positive": positive,
                 # Demoted, not filtered. A transcription is the only text 69
                 # tracks have, so removing them would make those songs
                 # unfindable by their words; they simply must not outrank a
@@ -79,6 +159,65 @@ def keyword_search(query: str, k: int = 5, os_client: Any = None) -> list[Search
                 # are Whisper's.
                 "negative": {"term": {"lyrics_source": TRANSCRIBED_SOURCE}},
                 "negative_boost": TRANSCRIBED_BOOST,
+            }
+        },
+    }
+    res = c.search(index=settings.index_name, body=body)
+    return [_hit(h) for h in res["hits"]["hits"]]
+
+
+def hybrid_search(
+    query: str,
+    k: int = 5,
+    mood: Optional[str] = None,
+    genre: Optional[str] = None,
+    os_client: Any = None,
+) -> list[SearchHit]:
+    """Hybrid semantic + keyword search with cached boolean mood and genre filter."""
+    from .embed import embed_text
+    from .osclient import client
+
+    c = os_client or client()
+    vec = embed_text(query)
+
+    filter_clauses: list[dict[str, Any]] = []
+    if mood:
+        filter_clauses.append(_mood_filter(mood))
+    if genre and genre.strip().lower() != "all":
+        filter_clauses.append(_genre_filter(genre))
+
+    knn_clause: dict[str, Any] = {"vector": vec, "k": k}
+    if filter_clauses:
+        knn_clause["filter"] = filter_clauses[0] if len(filter_clauses) == 1 else {"bool": {"filter": filter_clauses}}
+
+    body = {
+        "size": k,
+        "query": {
+            "bool": {
+                "should": [
+                    {
+                        "boosting": {
+                            "positive": {
+                                "multi_match": {
+                                    "query": query,
+                                    "fields": [
+                                        "title^2.5",
+                                        "artist^2.0",
+                                        "broad_genres^2.0",
+                                        "artist_genres^1.5",
+                                        "audio_genre^1.0",
+                                        "album",
+                                        "plain_lyrics^0.5",
+                                    ],
+                                }
+                            },
+                            "negative": {"term": {"lyrics_source": TRANSCRIBED_SOURCE}},
+                            "negative_boost": TRANSCRIBED_BOOST,
+                        }
+                    },
+                    {"knn": {"lyrics_vector": knn_clause}},
+                ],
+                "filter": filter_clauses,
             }
         },
     }

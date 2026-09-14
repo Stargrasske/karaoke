@@ -29,7 +29,8 @@ plugins:
         python:
           options:
             show_source: false
-  - mermaid2
+  - mermaid2:
+      javascript: "https://unpkg.com/mermaid/dist/mermaid.min.js"
   - glightbox
   - mkdocs_graphviz
 
@@ -55,16 +56,17 @@ markdown_extensions:
 
 extra_javascript:
   - https://cdn.jsdelivr.net/gh/rod2ik/cdn@main/mkdocs/javascripts/mkdocs-graphviz.js
-  # This allows Mermaid to render correctly in the browser
-  - https://unpkg.com/mermaid/dist/mermaid.min.js
 
 nav:
   - Overview: index.md
   - Quickstart runbook: howto-quickstart-runbook.md
   - Architecture: architecture.md
   - Services & Topology: platform-services.md
-  - Cache schema: cache-schema.md
-  - Local cache and stats: local-cache-and-stats.md
+  - Storage & Data:
+      - Database backend: database.md
+      - Cache schema: cache-schema.md
+      - Local cache and stats: local-cache-and-stats.md
+      - Bulk ingestion: ingestion.md
   - API reference: api.md
   - Control API: control-api.md
   - systemd services: howto-systemd-services.md
@@ -89,7 +91,15 @@ nav:
   - Vectors: vectors.md
   - Search how-to: search-howto.md
   - Troubleshooting: troubleshooting.md
-  - Roadmap / TODO: todo.md
+  - Plans & Design:
+      - Roadmap / TODO: todo.md
+      - Vector search plan: vector-search-plan.md
+      - Chromecast dual playback plan: chromecast_dual_playback_and_two_part_experience_plan.md
+      - Doc workflow plan: design/documentation-agent-workflow-plan.md
+      - TUI first concept: design/karaoke-tui-first-concept.md
+  - Releases:
+      - Version 0.8.0: releases/0.8.0.md
+      - Version 0.7.0: releases/0.7.0.md
   - Tools:
       - karaoke: '!include ./src/karaoke/mkdocs.yml'
 

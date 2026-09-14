@@ -69,6 +69,40 @@ def test_scan_uses_fingerprint_when_tags_missing(tmp_path):
         assert stats["items"][0]["title"] == "Creep"
 
 
+def test_scan_uses_filename_fallback_when_tags_and_fingerprint_missing(tmp_path):
+    test_file = tmp_path / "07 Gadjo - Besame Mucho.mp3"
+    test_file.write_bytes(b"dummy")
+
+    fake_tags = MagicMock(artist="", title="07 Gadjo - Besame Mucho", album="", duration=None, path=str(test_file))
+
+    with patch("karaoke.tags.is_audio", return_value=True), \
+         patch("karaoke.tags.extract_tags", return_value=fake_tags), \
+         patch("karaoke.folder_scan.identify_file_fingerprint", return_value=None), \
+         patch("karaoke.analyze.analyze_audio", return_value=MagicMock(key=None, bpm=None)), \
+         patch("karaoke.clap_vector.available", return_value=False):
+        stats = scan_and_ingest_folder(tmp_path, dry_run=True, resolve_streaming=False)
+        assert stats["processed"] == 1
+        assert stats["items"][0]["artist"] == "Gadjo"
+        assert stats["items"][0]["title"] == "Besame Mucho"
+
+
+def test_scan_uses_filename_fallback_no_spaces_hyphen(tmp_path):
+    test_file = tmp_path / "Andalousie-Ferreri & Tio Ferret.mp3"
+    test_file.write_bytes(b"dummy")
+
+    fake_tags = MagicMock(artist="", title="Andalousie-Ferreri & Tio Ferret", album="", duration=None, path=str(test_file))
+
+    with patch("karaoke.tags.is_audio", return_value=True), \
+         patch("karaoke.tags.extract_tags", return_value=fake_tags), \
+         patch("karaoke.folder_scan.identify_file_fingerprint", return_value=None), \
+         patch("karaoke.analyze.analyze_audio", return_value=MagicMock(key=None, bpm=None)), \
+         patch("karaoke.clap_vector.available", return_value=False):
+        stats = scan_and_ingest_folder(tmp_path, dry_run=True, resolve_streaming=False)
+        assert stats["processed"] == 1
+        assert stats["items"][0]["artist"] == "Andalousie"
+        assert stats["items"][0]["title"] == "Ferreri & Tio Ferret"
+
+
 def test_scan_reports_progress_events(tmp_path):
     test_file = tmp_path / "song.mp3"
     test_file.write_bytes(b"dummy")

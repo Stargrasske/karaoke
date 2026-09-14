@@ -71,17 +71,20 @@ class PostprocessContext:
 
     # Methods for easy serialization/deserialization to/from dict for Celery
     def to_dict(self) -> dict[str, Any]:
-        d = self.__dict__.copy()
+        d = dict(self.__dict__)
         d["audio_path"] = str(self.audio_path) if self.audio_path else None
+        d["pending"] = list(self.pending) if self.pending else []
         # Convert Path objects to strings for serialization
         return d
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "PostprocessContext":
-        # Convert string paths back to Path objects on deserialization
-        d["audio_path"] = Path(d["audio_path"]) if d.get("audio_path") else None
-        d["pending"] = d.get("pending", []) # Ensure pending is always a list
-        return PostprocessContext(**d)
+        # Make a copy so we do not mutate Celery task arguments in-place
+        data = dict(d)
+        raw_path = data.get("audio_path")
+        data["audio_path"] = Path(raw_path) if raw_path else None
+        data["pending"] = list(data.get("pending") or []) # Ensure pending is always a list
+        return PostprocessContext(**data)
 
 
 @app.task(
@@ -149,45 +152,63 @@ def resolve_track_id(self, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Track not found: {artist} - {title}")
         context.track_id = track_id
 
-        # Prefer a real watch source from the DB over a non-watchable payload URL
-        if not localcache.extract_youtube_id(url):
-            url = ""
-        if not url:
-            row = conn.execute(
-                """
-                SELECT url FROM sources
-                WHERE track_id = ? AND kind IN ('youtube', 'youtube_music')
-                ORDER BY CASE WHEN kind = 'youtube_music' THEN 0 ELSE 1 END
-                LIMIT 1
-                """,
+        # Check if payload URL or stored sources point to a local audio file
+        local_file_path: Optional[Path] = None
+        if url and Path(url).is_file():
+            local_file_path = Path(url)
+        else:
+            local_row = conn.execute(
+                "SELECT url FROM sources WHERE track_id = ? AND kind = 'local' LIMIT 1",
                 (track_id,),
             ).fetchone()
-            if row:
-                context.url = row[0]
-            else:
-                # No youtube source found! Let's do an automatic search to find one.
-                # Only if this track actually needs postprocessing (sync or analysis).
-                pending_temp = needs_postprocessing(track_id, conn)
-                if "analysis" in pending_temp or "sync" in pending_temp:
-                    try:
-                        from . import youtube
-                        log.info("postprocess: searching youtube for %s - %s", artist, title)
-                        results = youtube.search(f"{artist} - {title}", limit=3)
-                        if results:
-                            best_url = results[0]["url"]
-                            # Add this source to the database so it's cached for future use!
-                            localcache.add_track_source(
-                                artist,
-                                title,
-                                url=best_url,
-                                kind="youtube",
-                                conn=conn,
-                            )
-                            context.url = best_url
-                            log.info("postprocess: resolved youtube source for %s - %s -> %s",
-                                     artist, title, best_url)
-                    except Exception as e:
-                        log.debug("postprocess: youtube search failed: %s", e)
+            if local_row and local_row[0] and Path(local_row[0]).is_file():
+                local_file_path = Path(local_row[0])
+
+        if local_file_path:
+            context.audio_path = local_file_path
+            context.url = str(local_file_path)
+            log.info("postprocess: resolved local audio source for %s - %s -> %s",
+                     artist, title, local_file_path)
+        else:
+            # Prefer a real watch source from the DB over a non-watchable payload URL
+            if not localcache.extract_youtube_id(url):
+                url = ""
+            if not url:
+                row = conn.execute(
+                    """
+                    SELECT url FROM sources
+                    WHERE track_id = ? AND kind IN ('youtube', 'youtube_music')
+                    ORDER BY CASE WHEN kind = 'youtube_music' THEN 0 ELSE 1 END
+                    LIMIT 1
+                    """,
+                    (track_id,),
+                ).fetchone()
+                if row:
+                    context.url = row[0]
+                else:
+                    # No youtube source found! Let's do an automatic search to find one.
+                    # Only if this track actually needs postprocessing (sync or analysis).
+                    pending_temp = needs_postprocessing(track_id, conn)
+                    if "analysis" in pending_temp or "sync" in pending_temp:
+                        try:
+                            from . import youtube
+                            log.info("postprocess: searching youtube for %s - %s", artist, title)
+                            results = youtube.search(f"{artist} - {title}", limit=3)
+                            if results:
+                                best_url = results[0]["url"]
+                                # Add this source to the database so it's cached for future use!
+                                localcache.add_track_source(
+                                    artist,
+                                    title,
+                                    url=best_url,
+                                    kind="youtube",
+                                    conn=conn,
+                                )
+                                context.url = best_url
+                                log.info("postprocess: resolved youtube source for %s - %s -> %s",
+                                         artist, title, best_url)
+                        except Exception as e:
+                            log.debug("postprocess: youtube search failed: %s", e)
         context.pending = needs_postprocessing(track_id, conn)
 
     return context.to_dict() # Return dict for serialization
@@ -196,6 +217,8 @@ def resolve_track_id(self, payload: dict[str, Any]) -> dict[str, Any]:
 @app.task(bind=True, name="karaoke.tasks.download_audio", autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=2)
 def download_audio(self, context_dict: dict[str, Any]) -> dict[str, Any]:
     context = PostprocessContext.from_dict(context_dict)
+    if context.audio_path and context.audio_path.is_file():
+        return context.to_dict()
     if context.track_id is None or context.url is None or ("analysis" not in context.pending and "sync" not in context.pending):
         return context.to_dict()
     log.info("celery download_audio: %s - %s", context.artist, context.title)
@@ -226,7 +249,15 @@ def analyze_audio(self, context_dict: dict[str, Any]) -> dict[str, Any]:
     return context.to_dict()
 
 
-@app.task(bind=True, name="karaoke.tasks.upgrade_timings", autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=2)
+@app.task(
+    bind=True,
+    name="karaoke.tasks.upgrade_timings",
+    rate_limit="15/m",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
+    max_retries=2,
+)
 def upgrade_timings(self, context_dict: dict[str, Any]) -> dict[str, Any]:
     context = PostprocessContext.from_dict(context_dict)
     if context.track_id is None or "timings" not in context.pending:
@@ -239,6 +270,11 @@ def upgrade_timings(self, context_dict: dict[str, Any]) -> dict[str, Any]:
             log.warning("postprocess: timings upgrade failed for track %s (%s)",
                         context.track_id, context.url)
             raise RuntimeError(f"Timings upgrade failed for track {context.track_id}") # Retryable error
+        if status == "rate-limited":
+            log.warning("postprocess: timings upgrade rate-limited for track %s (%s); pausing 30s",
+                        context.track_id, context.url)
+            import time
+            time.sleep(30.0)
     return context.to_dict()
 
 
@@ -276,3 +312,75 @@ def enqueue_postprocess(payload: dict[str, Any]) -> str:
     """Publish a Celery post-processing task and return its task id."""
     result = postprocess_track.delay(payload)
     return str(result.id)
+
+
+@app.task(
+    bind=True,
+    name="karaoke.tasks.sync_ytmusic_playlist",
+    ignore_result=False,
+)
+def sync_ytmusic_playlist(self, payload: dict[str, Any]) -> dict[str, Any]:
+    """Background task to sync queue tracks to YouTube Music and persist in SQLite."""
+    from . import ytmusic_playlist, localcache
+    from .ytmusic_client import YTMusicAuthError
+
+    name = payload.get("name")
+    query = payload.get("query", "")
+    rows = payload.get("rows", [])
+    max_tracks = int(payload.get("max_tracks", 50))
+
+    try:
+        result = ytmusic_playlist.create_temp_queue_playlist(
+            rows,
+            name=name,
+            search_query=query,
+            max_tracks=max_tracks,
+        )
+        localcache.record_queue_event(
+            "ytmusic_sync",
+            metadata={
+                "playlist_id": result.playlist_id,
+                "name": result.name,
+                "count": result.added,
+                "query": query,
+            },
+        )
+        return {
+            "playlist_id": result.playlist_id,
+            "name": result.name,
+            "added": result.added,
+            "resolved": result.resolved,
+            "query": query,
+        }
+    except YTMusicAuthError:
+        log.warning("YouTube Music sync aborted: authentication missing or invalid")
+        raise
+    except Exception as exc:
+        log.exception("YouTube Music sync failed: %s", exc)
+        if self.request.retries < 1:
+            raise self.retry(exc=exc, countdown=5)
+        raise
+
+
+@app.task(
+    bind=True,
+    name="karaoke.tasks.add_to_ytmusic_playlist_task",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=2,
+    ignore_result=False,
+)
+def add_to_ytmusic_playlist_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+    """Append a single track to a YouTube Music playlist in the background."""
+    from . import ytmusic_playlist
+
+    playlist_id = str(payload.get("playlist_id") or "")
+    artist = str(payload.get("artist") or "")
+    title = str(payload.get("title") or "")
+    video_id = str(payload.get("video_id") or "")
+
+    ok, res = ytmusic_playlist.add_track_to_ytmusic_playlist(
+        playlist_id, artist, title, video_id=video_id
+    )
+    return {"ok": ok, "video_id": res if ok else "", "error": "" if ok else res}
+

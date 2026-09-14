@@ -15,9 +15,14 @@ LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 def write(line: str) -> None:
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     text = f"[{stamp}] {line}"
-    print(text, flush=True)
+    # Persist first: unattended runs may outlive the launching terminal/process,
+    # leaving stdout as a broken pipe. The logfile must keep advancing even then.
     with LOG_PATH.open("a", encoding="utf-8") as handle:
         handle.write(text + "\n")
+    try:
+        print(text, flush=True)
+    except BrokenPipeError:
+        pass
 
 
 def progress(event: str, payload: dict) -> None:

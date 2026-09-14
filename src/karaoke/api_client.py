@@ -148,6 +148,15 @@ class ApiClient:
                 return []
         return []
 
+    def sounds_like(self, track_id: int, limit: int = 10,
+                    per_artist: int = 2) -> list[dict[str, Any]]:
+        """Find tracks that acoustically sound like a specific track."""
+        res = self._http_get(self.lib_url, f"/api/tracks/{track_id}/sounds-like",
+                             {"limit": limit, "per_artist": per_artist})
+        if res is not None and isinstance(res, list):
+            return res
+        return self.suggest_queue([track_id], limit=limit, per_artist=per_artist)
+
     def list_recordings(
         self,
         status: Optional[str] = None,
@@ -200,6 +209,37 @@ class ApiClient:
         if keep_audio is not None:
             body["keep_audio"] = keep_audio
         return self._http_patch(self.lib_url, f"/api/recordings/{recording_id}", body)
+
+    def radio_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        res = self._http_get(self.lib_url, "/api/radio/sessions", {"limit": limit})
+        if res and "sessions" in res:
+            return res["sessions"]
+        if self.fallback_local:
+            from . import localcache
+            return localcache.get_radio_sessions(limit=limit)
+        return []
+
+    def radio_session(self, session_id: int) -> Optional[dict[str, Any]]:
+        res = self._http_get(self.lib_url, f"/api/radio/sessions/{session_id}")
+        if res and "session" in res:
+            return res
+        if self.fallback_local:
+            from . import localcache
+            s = localcache.get_radio_session(session_id)
+            if s:
+                tracks = localcache.get_radio_session_tracks(session_id)
+                return {"session": s, "tracks": tracks, "count": len(tracks)}
+        return None
+
+    def import_radio_session(self, session_id: int, save_audio: bool = True, resolve_streaming: bool = True) -> dict[str, Any]:
+        params = {"save_audio": str(save_audio).lower(), "resolve_streaming": str(resolve_streaming).lower()}
+        res = self._http_post(self.ctrl_url, f"/api/radio/sessions/{session_id}/import?save_audio={params['save_audio']}&resolve_streaming={params['resolve_streaming']}")
+        if res is not None:
+            return res
+        if self.fallback_local:
+            from . import radio_pipeline
+            return radio_pipeline.import_radio_session(session_id, save_audio=save_audio, resolve_streaming=resolve_streaming)
+        return {"status": "unreachable"}
 
     # -- Control API methods --
 

@@ -195,3 +195,83 @@ def test_admin_folder_scan_done_formatter_reports_counts():
     assert "seen=5" in line
     assert "processed=5" in line
     assert "errors=0" in line
+
+
+def test_admin_recording_status_detects_recording(monkeypatch):
+    """refresh_record_status recognizes active recording from 'recording' key."""
+    from karaoke.admin_tui import KaraokeAdminApp
+
+    app = KaraokeAdminApp.__new__(KaraokeAdminApp)
+    app._record_tick = 0
+    app._recording_id = None
+
+    class FakeButton:
+        def __init__(self):
+            self.label = ""
+            self.variant = ""
+
+    class FakePanel:
+        def __init__(self):
+            self.classes = set()
+            self.content = ""
+        def set_class(self, val, cls):
+            if val: self.classes.add(cls)
+            else: self.classes.discard(cls)
+        def update(self, c):
+            self.content = c
+
+    btn = FakeButton()
+    panel = FakePanel()
+
+    def fake_query_one(selector, *a, **k):
+        if selector == "#btn-record":
+            return btn
+        if selector == "#record-panel":
+            return panel
+        raise ValueError(f"Unknown selector {selector}")
+
+    monkeypatch.setattr(app, "query_one", fake_query_one, raising=False)
+
+    class FakeApi:
+        def record_status(self):
+            return {
+                "recording": [
+                    {
+                        "recording_id": 42,
+                        "status": "recording",
+                        "elapsed_s": 125.0,
+                        "identified": 3,
+                        "marks": 5,
+                        "audio_bytes": 1000000,
+                        "source": "alsa.monitor",
+                    }
+                ],
+                "count": 1,
+            }
+
+    monkeypatch.setattr(app, "api", FakeApi(), raising=False)
+    app.refresh_record_status()
+
+    assert app._recording_id == 42
+    assert "Stop Record #42" in btn.label
+    assert btn.variant == "error"
+    assert "-on" in panel.classes
+    assert "REC 42" in panel.content
+
+
+def test_admin_browse_selected_recording_modal_push(monkeypatch):
+    """B key or row selection pushes RecordingBrowseModal."""
+    from karaoke.admin_tui import KaraokeAdminApp, RecordingBrowseModal
+
+    app = KaraokeAdminApp.__new__(KaraokeAdminApp)
+    app._recording_id = 17
+    app._recording_rows = {"row-1": 17}
+
+    screens = []
+    monkeypatch.setattr(app, "push_screen", lambda scr: screens.append(scr), raising=False)
+
+    app.action_browse_selected_recording()
+    assert len(screens) == 1
+    assert isinstance(screens[0], RecordingBrowseModal)
+    assert screens[0].recording_id == 17
+

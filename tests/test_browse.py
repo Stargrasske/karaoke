@@ -8,15 +8,14 @@ class DummyProcess:
     pid = 4242
 
 
-def test_open_song_url_spawns_xdg_open(monkeypatch, tmp_path):
+def test_open_song_url_blocks_xdg_open_for_browser_urls(monkeypatch, tmp_path):
     calls = []
 
     def fake_popen(args, stdout=None, stderr=None):
         calls.append((args, stdout, stderr))
         return DummyProcess()
 
-    monkeypatch.setattr(browse, "OPEN_STDOUT_LOG", tmp_path / "xdg.stdout.log")
-    monkeypatch.setattr(browse, "OPEN_STDERR_LOG", tmp_path / "xdg.stderr.log")
+    monkeypatch.delenv("KARAOKE_ALLOW_XDG_OPEN_FALLBACK", raising=False)
     monkeypatch.setattr(browse.subprocess, "Popen", fake_popen)
     # Mock try_chrome_cdp_navigate to always return False to isolate test
     import karaoke.player_open
@@ -25,10 +24,8 @@ def test_open_song_url_spawns_xdg_open(monkeypatch, tmp_path):
 
     pid = browse.open_song_url("https://www.youtube.com/watch?v=bXWHf2HH8jY", "youtube")
 
-    assert pid == 4242
-    assert calls[0][0] == ["xdg-open", "https://music.youtube.com/watch?v=bXWHf2HH8jY"]
-    assert calls[0][1] is not None
-    assert calls[0][2] is not None
+    assert pid is None
+    assert calls == []
 
 
 def test_open_song_url_prefers_youtube_music_audio_search(monkeypatch, tmp_path):
@@ -40,6 +37,7 @@ def test_open_song_url_prefers_youtube_music_audio_search(monkeypatch, tmp_path)
 
     monkeypatch.setattr(browse, "OPEN_STDOUT_LOG", tmp_path / "xdg.stdout.log")
     monkeypatch.setattr(browse, "OPEN_STDERR_LOG", tmp_path / "xdg.stderr.log")
+    monkeypatch.setenv("KARAOKE_ALLOW_XDG_OPEN_FALLBACK", "1")
     monkeypatch.setattr(browse.subprocess, "Popen", fake_popen)
     import karaoke.player_open
     monkeypatch.setattr(karaoke.player_open, "try_chrome_cdp_navigate", lambda *args, **kwargs: False)
@@ -66,6 +64,32 @@ def test_open_song_url_prefers_youtube_music_audio_search(monkeypatch, tmp_path)
     ]
 
 
+def test_open_song_url_preserves_playlist_parameters(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_popen(args, stdout=None, stderr=None):
+        calls.append((args, stdout, stderr))
+        return DummyProcess()
+
+    monkeypatch.setattr(browse, "OPEN_STDOUT_LOG", tmp_path / "xdg.stdout.log")
+    monkeypatch.setattr(browse, "OPEN_STDERR_LOG", tmp_path / "xdg.stderr.log")
+    monkeypatch.setenv("KARAOKE_ALLOW_XDG_OPEN_FALLBACK", "1")
+    monkeypatch.setattr(browse.subprocess, "Popen", fake_popen)
+    import karaoke.player_open
+    monkeypatch.setattr(karaoke.player_open, "try_chrome_cdp_navigate", lambda *args, **kwargs: False)
+    monkeypatch.setattr(karaoke.player_open, "launch_kiosk_browser", lambda *args, **kwargs: False)
+
+    browse.open_song_url(
+        "https://music.youtube.com/watch?v=ABCDEFGHIJK&list=PL_TEST123&index=4", "youtube_music",
+    )
+
+    assert calls[0][0] == [
+        "xdg-open",
+        "https://music.youtube.com/watch?v=ABCDEFGHIJK&list=PL_TEST123&index=4",
+    ]
+
+
+
 def test_open_song_url_uses_playerctl_for_spotify(monkeypatch, tmp_path):
     calls = []
 
@@ -75,6 +99,7 @@ def test_open_song_url_uses_playerctl_for_spotify(monkeypatch, tmp_path):
 
     monkeypatch.setattr(browse, "OPEN_STDOUT_LOG", tmp_path / "xdg.stdout.log")
     monkeypatch.setattr(browse, "OPEN_STDERR_LOG", tmp_path / "xdg.stderr.log")
+    monkeypatch.setenv("KARAOKE_ALLOW_XDG_OPEN_FALLBACK", "1")
     monkeypatch.setattr(browse.subprocess, "Popen", fake_popen)
     import karaoke.player_open
     monkeypatch.setattr(karaoke.player_open, "try_chrome_cdp_navigate", lambda *args, **kwargs: False)

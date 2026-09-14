@@ -16,6 +16,25 @@ _model: Any = None
 def _get_model() -> Any:
     global _model
     if _model is None:
+        import os
+        import threading
+
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        os.environ.setdefault("TQDM_DISABLE", "1")
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        try:
+            from tqdm import tqdm
+
+            tqdm.set_lock(threading.RLock())
+        except Exception:
+            pass
+        try:
+            from transformers.utils import logging as hf_logging
+
+            hf_logging.disable_progress_bar()
+        except Exception:
+            pass
+
         from sentence_transformers import SentenceTransformer
 
         _model = SentenceTransformer(settings.embed_model)

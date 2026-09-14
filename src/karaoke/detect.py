@@ -45,6 +45,7 @@ class Detection:
     # Seconds. Duration is what lets the deduplicator tell a demo or a live
     # take from the studio cut; without it that guard abstains on every pair.
     duration: Optional[float] = None
+    playlist_id: str = ""
 
     @property
     def is_active(self) -> bool:
@@ -70,21 +71,24 @@ def classify(meta: Optional[PlayerMetadata]) -> Detection:
       YT Music, VLC, local players).
     - Nothing playing -> ``browse`` mode (library-driven, opens the browser).
     """
+    from . import localcache
+
     if meta is None:
         return Detection(mode="browse")
     player = (meta.mpris_name or meta.player or "").lower()
     mpris = meta.mpris_name or meta.player
     ref = normalize_player_track(meta.artist, meta.title, meta.album, meta.url)
+    pl_id = localcache.extract_playlist_id(meta.url) or ""
     if player.startswith("spotify"):
         return Detection("spotify", meta.player, ref.artist, ref.title, meta.url,
                          mpris_name=mpris, album=ref.album,
-                         duration=meta.duration)
+                         duration=meta.duration, playlist_id=pl_id)
     # A desktop or browser player is active: sync to its position. Trust a
     # YouTube URL over the (often stale) browser artist/title for display.
     if ref.title or ref.artist or meta.url:
         return Detection("scan", meta.player, ref.artist, ref.title, meta.url,
                          mpris_name=mpris, album=ref.album,
-                         duration=meta.duration)
+                         duration=meta.duration, playlist_id=pl_id)
     return Detection(mode="browse")
 
 
@@ -154,10 +158,32 @@ def detect_active(mic_artist: str = "", mic_title: str = "") -> Detection:
     The mic hints are used only to break a tie between players that are *all*
     playing; they never invent a detection on their own.
     """
-    from . import playerctl
+    from . import playerctl, player_open, localcache
 
     chosen = preferred_player(playerctl.playing_players(), mic_artist, mic_title)
-    return classify(current_metadata(chosen))
+    det = classify(current_metadata(chosen))
+
+    # If URL lacks playlist_id and playback is in browser kiosk, enrich with CDP location.href
+    if det.is_active and not det.playlist_id:
+        try:
+            b_state = player_open.browser_playback(timeout=0.08)
+            if b_state and b_state.get("url"):
+                pl_id = localcache.extract_playlist_id(b_state["url"])
+                if pl_id:
+                    det = Detection(
+                        mode=det.mode,
+                        player=det.player,
+                        artist=det.artist,
+                        title=det.title,
+                        url=det.url or b_state["url"],
+                        mpris_name=det.mpris_name,
+                        album=det.album,
+                        duration=det.duration,
+                        playlist_id=pl_id,
+                    )
+        except Exception:
+            pass
+    return det
 
 
 def spotify_running() -> bool:

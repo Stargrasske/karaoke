@@ -159,6 +159,48 @@ Full-text keyword queries on `title`, `artist`, `album`, `plain_lyrics`, `text`,
 
 This expands search coverage automatically (e.g., searching for `"sad"` matches lyrics containing `"melancholy"` or `"gloom"`).
 
+### Sentiment Vectors & Filter-Cached Hybrid Search
+
+The `tracks` index stores both coarse mood labels and normalized mood vectors:
+* **`dominant_mood`** (`keyword`): High-cardinality reuse category (`happy`, `sad`, `angry`, `tender`, `neutral`).
+* **`sentiment_hits`** (`integer`): Total number of emotion lexicon hits in the lyrics.
+* **`sentiment_vector`** (`knn_vector`, dimension: 4): Normalized mood distribution vector `(happy, sad, angry, tender)` indexed via Lucene HNSW with cosine similarity.
+
+#### Query Cache & Bitset Acceleration
+OpenSearch evaluates mood filters inside a `bool.filter` clause:
+1. **Bitset Caching (Node Query Cache)**: Because `dominant_mood` has only 5 discrete values, Lucene builds and caches compact `RoaringDocIdSet` bitsets across queries with near-100% cache hit rates.
+2. **k-NN Vector Pruning**: In `hybrid_search(query, k=5, mood="...")`, the cached bitset constrains k-NN graph exploration or triggers an exact bitset scan, avoiding expensive distance calculations against non-matching candidates.
+
+#### Performance Benchmarks (17,633 Indexed Documents)
+Measured using `scripts/benchmark_sentiment_search.py` on a live OpenSearch cluster:
+
+| Query | Search Type | Mood Filter | Cold Latency | Warm Cache (Avg) | Hits |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| `"love"` | Keyword (unfiltered BM25) | — | 42.7 ms | 12.8 ms | 10 |
+| `"love"` | Keyword (filtered) | `happy` | 15.3 ms | **6.7 ms** | 1 |
+| `"love"` | Hybrid (semantic + BM25 + k-NN) | `happy` | 28.5 ms* | **21.3 ms** | 1 |
+| `"sunshine"` | Keyword (filtered) | `tender` | 4.9 ms | **4.9 ms** | 0 |
+| `"darkness"` | Keyword (filtered) | `sad` | 4.1 ms | **3.4 ms** | 0 |
+| `"heartbreak"` | Keyword (filtered) | `neutral` | 3.2 ms | **2.5 ms** | 0 |
+
+*\*Excludes initial one-time neural model load into memory.*
+
+---
+
+## Automatic Missing Postprocessing Detection on Song Load
+
+When a song is loaded in the foreground, the system checks whether derived assets are missing without blocking the UI:
+
+* **Trigger Points**:
+  1. **Song Selection (`_show_selected_song`)**: Whenever a song is highlighted in the library or queue.
+  2. **Song Open (`_open_selected`)**: Whenever a song is opened into playback.
+  3. **Queue Play (`play_queue_index`)**: Whenever the play queue advances.
+  4. **Folder Scan (`folder_scan.py`)**: After local ingestion, if audio analysis is skipped or lacks key/BPM.
+* **Orchestration**:
+  - Checks [`needs_postprocessing(track_id, conn)`](file:///home/tina/karaoke/src/karaoke/postprocess_queue.py) for missing key/BPM, missing Enhanced LRC word timings, or un-synced plain lyrics.
+  - Non-blockingly dispatches Celery tasks (`karaoke.tasks.postprocess_track`) with session deduplication (`_postprocess_enqueued`).
+  - Recognizes local audio files directly, enabling offline key/BPM analysis without requiring YouTube downloads.
+
 ### Two things worth knowing about the vectors
 
 **A track with no words still has a lyric vector.** `_embedding_text` falls

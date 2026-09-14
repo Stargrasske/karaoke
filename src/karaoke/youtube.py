@@ -184,7 +184,13 @@ def _cookie_opts(
     """
     opts: dict = {}
     import os
+    from pathlib import Path
     cfb = cookies_from_browser or os.environ.get("KARAOKE_COOKIES_FROM_BROWSER")
+    if cfb and cfb.strip().lower() == "chrome":
+        p2 = Path.home() / ".config" / "google-chrome" / "Profile 2"
+        if p2.is_dir():
+            cfb = "chrome+GNOMEKEYRING:Profile 2"
+
     if cfb:
         # yt-dlp parses "BROWSER[+KEYRING][:PROFILE][::CONTAINER]"; the API wants
         # a tuple (browser, profile|None, keyring|None, container|None). We hand

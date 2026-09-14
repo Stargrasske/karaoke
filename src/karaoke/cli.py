@@ -75,6 +75,12 @@ def karaoke_main(argv: Optional[list[str]] = None) -> int:
                     help="continuously sync to desktop player position via playerctl (MPRIS)")
     ap.add_argument("--radio", "-r", action="store_true",
                     help="continuously follow live audio (mic): re-identify + re-sync as songs change")
+    ap.add_argument("--record", "-R", "--rec", dest="record", action="store_true",
+                    help="record live audio alongside radio mode (or sample capture)")
+    ap.add_argument("--radio-sessions", action="store_true",
+                    help="list recent radio listening sessions and their recording/import status")
+    ap.add_argument("--import-radio", type=int, metavar="SESSION_ID",
+                    help="import captured tracks from a radio session into the library")
     ap.add_argument("--reidentify", type=float, default=30.0,
                     help="seconds between re-identifications in --radio mode (default 30)")
     ap.add_argument("--timeout", "-t", type=int, default=30, help="listen timeout secs")
@@ -95,6 +101,14 @@ def karaoke_main(argv: Optional[list[str]] = None) -> int:
                     help="skip librosa beat detection in --file mode (use per-line pulse)")
     args = ap.parse_args(argv)
 
+    if getattr(args, "radio_sessions", False):
+        from .radio_pipeline import print_radio_sessions
+        return print_radio_sessions()
+
+    if getattr(args, "import_radio", None) is not None:
+        from .radio_pipeline import run_cli_import_radio_session
+        return run_cli_import_radio_session(args.import_radio)
+
     # Forward pre-bias for live recognition (mic/radio) modes only. Spotify has an
     # exact position and text/file modes start from a keypress, so no lead there.
     lead = DEFAULT_LEAD_S if args.lead is None else args.lead
@@ -102,7 +116,8 @@ def karaoke_main(argv: Optional[list[str]] = None) -> int:
     # Continuous radio mode: self-contained loop, no single-song resolution.
     if args.radio:
         from .player import play_radio_synced
-        play_radio_synced(mic=not args.output, reidentify_interval=args.reidentify,
+        play_radio_synced(mic=not args.output, record=args.record,
+                          reidentify_interval=args.reidentify,
                           extra_latency=args.offset + lead, listen_timeout=args.timeout)
         return 0
 

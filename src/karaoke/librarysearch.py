@@ -33,6 +33,7 @@ from . import localcache
 W_TITLE = 1.0
 W_ALBUM = 0.6
 W_ARTIST = 0.4
+W_GENRE = 0.35
 W_LYRICS = 0.2
 
 # Lyrics that are Whisper's own guess at the words, with nothing corroborating
@@ -98,6 +99,8 @@ class Hit:
     album: str
     score: float
     fields: tuple[str, ...]      # which fields contributed, best first
+    genre: str = ""
+    broad_genres: tuple[str, ...] = ()
 
     @property
     def label(self) -> str:
@@ -199,10 +202,36 @@ def score_row(row, query: str, *, search_lyrics: bool = True) -> tuple[float, tu
     artist = field_score(row["artist"] or "", query) * W_ARTIST
     if artist:
         parts.append((artist, "artist"))
+
+    # Genre matching: check broad genres, artist genres, and audio genre
+    keys = row.keys() if hasattr(row, "keys") else ()
+    g_score = 0.0
+    if "broad_genres" in keys and row["broad_genres"]:
+        bgs = row["broad_genres"]
+        if isinstance(bgs, str):
+            bgs = [bgs]
+        for bg in bgs:
+            s = field_score(bg, query)
+            if s > g_score:
+                g_score = s
+    if "artist_genres" in keys and row["artist_genres"]:
+        ags = row["artist_genres"]
+        if isinstance(ags, str):
+            ags = [ags]
+        for ag in ags:
+            s = field_score(ag, query) * 0.9
+            if s > g_score:
+                g_score = s
+    if "genre" in keys and row["genre"]:
+        s = field_score(str(row["genre"]), query) * 0.8
+        if s > g_score:
+            g_score = s
+    if g_score:
+        parts.append((g_score * W_GENRE, "genre"))
+
     if search_lyrics:
         words = lyrics_score(row["words"] if "words" in row.keys() else "", query)
         if words:
-            keys = row.keys()
             guessed = is_transcribed(row["lyrics_source"]
                                      if "lyrics_source" in keys else "")
             weight = W_LYRICS * (TRANSCRIBED_PENALTY if guessed else 1.0)
@@ -241,31 +270,114 @@ def score_row(row, query: str, *, search_lyrics: bool = True) -> tuple[float, tu
 
 
 def search(query: str, conn: sqlite3.Connection, *, limit: int = 25,
+           genre: Optional[str] = None,
            search_lyrics: bool = True) -> list[Hit]:
     """Ranked matches for a query, best first."""
     if not _normalise(query):
         return []
 
+    where_clauses = ["(t.duration IS NULL OR t.duration <= :album_seconds)"]
+    params: dict[str, object] = {"album_seconds": localcache.ALBUM_UPLOAD_SECONDS}
+
+    has_track_genre = True
+    try:
+        cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='track_genre'")
+        if not cur.fetchone():
+            has_track_genre = False
+    except Exception:
+        has_track_genre = False
+
+    has_artist_genres = True
+    try:
+        cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artist_genres'")
+        if not cur.fetchone():
+            has_artist_genres = False
+    except Exception:
+        has_artist_genres = False
+
+    artist_genres_map = localcache.get_all_artist_genres_map(conn) if has_artist_genres else {}
+
+    if genre and str(genre).strip().casefold() != "all":
+        selected_genre = str(genre).strip().casefold()
+        params["genre"] = selected_genre
+        conditions: list[str] = []
+        if has_track_genre and has_artist_genres:
+            conditions.append(
+                """(
+                    EXISTS (
+                        SELECT 1 FROM artist_genres ag
+                        WHERE (lower(trim(ag.broad_genre)) = :genre OR lower(trim(ag.genre)) = :genre)
+                          AND ag.artist_normalized = lower(trim(t.artist))
+                    )
+                    OR (
+                        NOT EXISTS (
+                            SELECT 1 FROM artist_genres ag
+                            WHERE ag.artist_normalized = lower(trim(t.artist))
+                        )
+                        AND EXISTS (
+                            SELECT 1 FROM track_genre g
+                            WHERE g.track_id = t.track_id AND lower(trim(g.genre)) = :genre
+                        )
+                    )
+                )"""
+            )
+        elif has_artist_genres:
+            conditions.append(
+                """EXISTS (
+                    SELECT 1 FROM artist_genres ag
+                    WHERE (lower(trim(ag.broad_genre)) = :genre OR lower(trim(ag.genre)) = :genre)
+                      AND ag.artist_normalized = lower(trim(t.artist))
+                )"""
+            )
+        elif has_track_genre:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM track_genre g WHERE g.track_id = t.track_id AND lower(trim(g.genre)) = :genre)"
+            )
+        if conditions:
+            where_clauses.append(f"({' OR '.join(conditions)})")
+        else:
+            return []
+
+    genre_col = "COALESCE(g.genre, '') AS genre" if has_track_genre else "'' AS genre"
+    join_genre = "LEFT JOIN track_genre g ON g.track_id = t.track_id" if has_track_genre else ""
+
     rows = conn.execute(
-        """
+        f"""
         SELECT t.track_id, t.artist, t.title, COALESCE(t.album, '') AS album,
                COALESCE(l.plain_lyrics, l.synced_lyrics, '') AS words,
-               COALESCE(l.source, '') AS lyrics_source
+               COALESCE(l.source, '') AS lyrics_source,
+               {genre_col}
         FROM tracks t
+        {join_genre}
         LEFT JOIN lyrics l ON l.track_id = t.track_id AND l.kind = 'approved'
         -- A full-album upload is not something you can pick and play.
-        WHERE t.duration IS NULL OR t.duration <= :album_seconds
-        """, {"album_seconds": localcache.ALBUM_UPLOAD_SECONDS}
+        WHERE {' AND '.join(where_clauses)}
+        """, params
     ).fetchall()
+
+    cols = ["track_id", "artist", "title", "album", "words", "lyrics_source"]
+    if has_track_genre:
+        cols.append("genre")
 
     hits: list[Hit] = []
     for row in rows:
-        score, fields = score_row(row, query, search_lyrics=search_lyrics)
+        if hasattr(row, "keys"):
+            row_dict = {k: row[k] for k in row.keys()}
+        else:
+            row_dict = dict(zip(cols, row))
+        norm_artist = _normalise(row_dict.get("artist") or "")
+        a_info = artist_genres_map.get(norm_artist, {})
+        row_dict["broad_genres"] = a_info.get("broad", [])
+        row_dict["artist_genres"] = a_info.get("specific", [])
+
+        score, fields = score_row(row_dict, query, search_lyrics=search_lyrics)
         if score <= 0:
             continue
-        hits.append(Hit(track_id=int(row["track_id"]), artist=row["artist"] or "",
-                        title=row["title"] or "", album=row["album"] or "",
-                        score=score, fields=fields))
+        g_val = row_dict.get("genre") or ""
+        hits.append(Hit(track_id=int(row_dict["track_id"]), artist=row_dict["artist"] or "",
+                        title=row_dict["title"] or "", album=row_dict["album"] or "",
+                        score=score, fields=fields, genre=g_val,
+                        broad_genres=tuple(row_dict["broad_genres"])))
     hits.sort(key=lambda h: (-h.score, h.artist.casefold(), h.title.casefold()))
     return hits[:limit]
 

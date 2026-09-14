@@ -22,6 +22,8 @@ from .ytmusic_client import YTMusicAuthError, YTMusicClient
 
 DEFAULT_PLAYLIST_NAME = "Karaoke (synced lyrics)"
 DEFAULT_DESCRIPTION = "Tracks with time-synced lyrics in the local karaoke library."
+TEMP_PLAYLIST_PREFIX = "Karaoke Temp Queue"
+TEMP_DESCRIPTION = "Temporary playback queue mirrored from the karaoke TUI search results."
 
 _YT_VIDEO_ID_REGEX = re.compile(
     r"(?:v=|/v/|youtu\.be/|/embed/|/watch\?v=|/track/)([A-Za-z0-9_-]{11})"
@@ -169,6 +171,304 @@ def build_or_sync_ytmusic_playlist(
     return result
 
 
+def queue_rows_to_ytmusic_candidates(rows: list[dict[str, Any]]) -> list[Candidate]:
+    """Convert TUI queue/search rows to YouTube-only playlist candidates.
+
+    This deliberately does not search YouTube Music for missing items: a current
+    search queue is an ordered playback intent, and resolving unknown rows by
+    title can silently add the wrong recording. Only rows with an already-known
+    YouTube/YT Music video ID are mirrored into the temporary playlist.
+    """
+    seen: set[str] = set()
+    candidates: list[Candidate] = []
+    for row in rows:
+        url = str(row.get("url") or "")
+        vid = extract_video_id(url)
+        if not vid or vid in seen:
+            continue
+        seen.add(vid)
+        candidates.append(Candidate(
+            artist=str(row.get("artist") or ""),
+            title=str(row.get("title") or ""),
+            video_id=vid,
+            resolved_by="stored",
+        ))
+    return candidates
+
+
+def clean_playlist_name_for_query(query: str | None) -> str:
+    """Format a clean, readable playlist title from a search query.
+
+    For example, 'radiohead' becomes 'Karaoke: Radiohead', '90s rock' becomes
+    'Karaoke: 90s Rock'. Empty or wildcard queries fall back to the default
+    daily temp queue title ('Karaoke Temp Queue YYYY-MM-DD').
+    """
+    import time
+
+    if not query or not query.strip() or query.strip() == "*":
+        return time.strftime(f"{TEMP_PLAYLIST_PREFIX} %Y-%m-%d")
+
+    # Clean up whitespace and special search tokens
+    q = query.strip()
+    # Remove leading search command syntax if typed (like '/' or 'search:')
+    q = re.sub(r"^(?:search:|\/)\s*", "", q, flags=re.IGNORECASE).strip()
+    # Collapse multiple whitespaces
+    q = re.sub(r"\s+", " ", q)
+    if not q or q == "*":
+        return time.strftime(f"{TEMP_PLAYLIST_PREFIX} %Y-%m-%d")
+
+    words = q.split(" ")
+    formatted_words = []
+    for w in words:
+        if w.isupper() and len(w) <= 4:
+            formatted_words.append(w)
+        else:
+            formatted_words.append(w.capitalize())
+    clean_title = " ".join(formatted_words)
+    if len(clean_title) > 50:
+        clean_title = clean_title[:47].rstrip() + "…"
+
+    return f"Karaoke: {clean_title}"
+
+
+def create_temp_queue_playlist(
+    rows: list[dict[str, Any]],
+    *,
+    name: str | None = None,
+    client: Optional[YTMusicClient] = None,
+    search_query: str = "",
+    max_tracks: int = 50,
+    conn: Optional[sqlite3.Connection] = None,
+) -> PlaylistResult:
+    """Create or overwrite today's private YouTube Music temp queue.
+
+    The playlist name defaults to a clean representation of the search query
+    (or today's daily temp queue). Tracks are capped to `max_tracks` (default 50)
+    to keep YouTube Music API requests responsive and reliable. The resulting
+    playlist and tracks are saved to SQLite for local tracking and offline history.
+    """
+    import time
+
+    yt = client or YTMusicClient()
+    yt.require_auth()
+
+    # Cap rows to max_tracks
+    capped_rows = rows[:max_tracks] if max_tracks and max_tracks > 0 else rows
+    candidates = queue_rows_to_ytmusic_candidates(capped_rows)
+
+    if name:
+        playlist_name = name
+    elif search_query:
+        playlist_name = clean_playlist_name_for_query(search_query)
+    else:
+        playlist_name = time.strftime(f"{TEMP_PLAYLIST_PREFIX} %Y-%m-%d")
+
+    result = PlaylistResult(name=playlist_name, candidates=len(candidates))
+    video_ids = [c.video_id for c in candidates if c.video_id]
+    result.resolved = len(video_ids)
+
+    playlists = yt.get_library_playlists(limit=1000)
+    temp_playlists = [
+        p for p in playlists
+        if str(p.get("title") or "").startswith((TEMP_PLAYLIST_PREFIX, "Karaoke:"))
+    ]
+    target_id = ""
+    for pl in temp_playlists:
+        if str(pl.get("title") or "").strip() == playlist_name:
+            target_id = str(pl.get("playlistId") or "")
+            break
+
+    if not target_id:
+        target_id = yt.create_playlist(
+            title=playlist_name,
+            description=TEMP_DESCRIPTION,
+            privacy_status="PRIVATE",
+            video_ids=[],
+        )
+    result.playlist_id = target_id
+
+    raw = yt.get_playlist(target_id, limit=500)
+    existing = [
+        track for track in (raw.get("tracks") or [])
+        if track.get("videoId") and track.get("setVideoId")
+    ]
+    if existing:
+        yt.remove_playlist_items(target_id, existing)
+
+    if video_ids:
+        # Add everything explicitly after creation/removal. In practice this is
+        # more reliable than passing a long video_ids list to create_playlist,
+        # which can leave only the first item in the playable queue.
+        yt.add_playlist_items(target_id, video_ids, duplicates=True)
+        result.added = len(video_ids)
+
+    # Keep only the two newest daily temp playlists. Names end in ISO dates, so
+    # lexical order matches chronological order for our generated names.
+    refreshed = yt.get_library_playlists(limit=1000)
+    stale = sorted(
+        [p for p in refreshed
+         if str(p.get("title") or "").startswith(TEMP_PLAYLIST_PREFIX)
+         and p.get("playlistId") != target_id],
+        key=lambda p: str(p.get("title") or ""),
+        reverse=True,
+    )[1:]
+    for pl in stale:
+        pid = str(pl.get("playlistId") or "")
+        if pid:
+            yt.delete_playlist(pid)
+
+    # Persist playlist and tracks to local SQLite DB
+    try:
+        saved_tracks = []
+        for pos, cand in enumerate(candidates, 1):
+            matched_row = next(
+                (
+                    r for r in capped_rows
+                    if (str(r.get("artist") or "").strip().lower() == cand.artist.strip().lower()
+                        and str(r.get("title") or "").strip().lower() == cand.title.strip().lower())
+                ),
+                {},
+            )
+            saved_tracks.append({
+                "position": pos,
+                "track_id": matched_row.get("track_id"),
+                "artist": cand.artist,
+                "title": cand.title,
+                "video_id": cand.video_id,
+                "url": matched_row.get("url") or (f"https://music.youtube.com/watch?v={cand.video_id}" if cand.video_id else ""),
+            })
+
+        localcache.save_playlist(
+            target_id,
+            playlist_name,
+            search_query=search_query or "",
+            tracks=saved_tracks,
+            url=f"https://music.youtube.com/playlist?list={target_id}",
+            conn=conn,
+        )
+    except Exception as exc:
+        log.warning("Failed to save synced playlist to SQLite: %s", exc)
+
+    return result
+
+
+def get_latest_temp_queue_playlist(
+    client: Optional[YTMusicClient] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[dict[str, Any]]:
+    """Fetch the newest temp queue playlist from YouTube Music and map its tracks.
+
+    Returns a dict with 'playlist_id', 'name', and 'rows' (in playlist order),
+    or None if YouTube Music is unauthenticated or no temp playlist exists.
+    """
+    try:
+        yt = client or YTMusicClient()
+        if not yt.is_authenticated:
+            return None
+        playlists = yt.get_library_playlists(limit=50)
+    except Exception as exc:
+        log.debug("fetch latest temp queue playlists failed: %s", exc)
+        return None
+
+    temp_playlists = sorted(
+        [
+            p for p in playlists
+            if str(p.get("title") or "").startswith(TEMP_PLAYLIST_PREFIX)
+            and p.get("playlistId")
+        ],
+        key=lambda p: str(p.get("title") or ""),
+        reverse=True,
+    )
+    if not temp_playlists:
+        return None
+
+    target = temp_playlists[0]
+    target_id = str(target.get("playlistId") or "")
+    target_name = str(target.get("title") or "")
+    if not target_id:
+        return None
+
+    try:
+        raw = yt.get_playlist(target_id, limit=500)
+    except Exception as exc:
+        log.debug("get playlist %s failed: %s", target_id, exc)
+        return None
+
+    tracks = raw.get("tracks") or []
+    if not tracks:
+        return {"playlist_id": target_id, "name": target_name, "rows": []}
+
+    own_conn = conn is None
+    c = conn or localcache.connect()
+    try:
+        try:
+            from . import track_analysis
+            track_analysis.ensure_schema(c)
+        except Exception:
+            pass
+        try:
+            from . import genre
+            genre.ensure_schema(c)
+        except Exception:
+            pass
+
+        rows: list[dict[str, Any]] = []
+        for t in tracks:
+            vid = str(t.get("videoId") or "").strip()
+            if not vid:
+                continue
+            title = str(t.get("title") or "").strip()
+            artists = t.get("artists") or []
+            artist = str(artists[0].get("name") if artists and isinstance(artists[0], dict) else "").strip()
+
+            found = c.execute(
+                """
+                SELECT t.track_id, t.artist, t.title, s.url, s.kind,
+                       g.genre, a.energy, a.bpm, a.detected_key AS key
+                FROM sources s
+                JOIN tracks t ON t.track_id = s.track_id
+                LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                LEFT JOIN track_genre g ON g.track_id = t.track_id
+                WHERE s.url LIKE ?
+                LIMIT 1
+                """,
+                (f"%{vid}%",),
+            ).fetchone()
+
+            if found:
+                rows.append({
+                    "track_id": found["track_id"],
+                    "artist": found["artist"] or artist,
+                    "title": found["title"] or title,
+                    "url": found["url"] or f"https://music.youtube.com/watch?v={vid}",
+                    "kind": found["kind"] or "youtube_music",
+                    "genre": found["genre"],
+                    "energy": found["energy"],
+                    "bpm": found["bpm"],
+                    "key": found["key"],
+                })
+            else:
+                rows.append({
+                    "track_id": None,
+                    "artist": artist,
+                    "title": title,
+                    "url": f"https://music.youtube.com/watch?v={vid}",
+                    "kind": "youtube_music",
+                    "genre": None,
+                    "energy": None,
+                    "bpm": None,
+                    "key": None,
+                })
+        return {
+            "playlist_id": target_id,
+            "name": target_name,
+            "rows": rows,
+        }
+    finally:
+        if own_conn:
+            c.close()
+
+
 def export_synced_tracks_to_ytmusic(
     *,
     name: str = DEFAULT_PLAYLIST_NAME,
@@ -196,6 +496,151 @@ def export_synced_tracks_to_ytmusic(
         dry_run=dry_run,
         client=client,
     )
+
+
+def add_track_to_ytmusic_playlist(
+    playlist_id: str,
+    artist: str,
+    title: str,
+    video_id: str = "",
+    client: Optional[YTMusicClient] = None,
+) -> tuple[bool, str]:
+    """Resolve video ID if missing and append track to a remote YouTube Music playlist."""
+    if not playlist_id:
+        return False, "No playlist ID provided"
+    yt = client or YTMusicClient()
+    vid = video_id
+    if not vid:
+        vid = yt.search_track(artist, title) or ""
+    if not vid:
+        return False, f"Could not resolve YouTube video ID for {artist} - {title}"
+
+    try:
+        yt.require_auth()
+        yt.add_playlist_items(playlist_id, [vid], duplicates=False)
+        return True, vid
+    except Exception as exc:
+        log.warning("Failed to add track %s to YouTube Music playlist %s: %s", vid, playlist_id, exc)
+        return False, str(exc)
+
+
+def reconcile_playlist_with_remote(
+    playlist_id: str,
+    local_rows: list[dict[str, Any]],
+    client: Optional[YTMusicClient] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Compare local queue rows with remote YouTube Music playlist tracks and reconcile drift.
+
+    Returns (updated_rows, has_drift).
+    """
+    if not playlist_id:
+        return local_rows, False
+    yt = client or YTMusicClient()
+    if not yt.is_authenticated:
+        return local_rows, False
+
+    try:
+        remote_tracks = yt.get_playlist_tracks(playlist_id, limit=500)
+    except Exception as exc:
+        log.debug("reconcile_playlist_with_remote: failed fetching remote tracks: %s", exc)
+        return local_rows, False
+
+    remote_vids = [str(t.get("videoId") or "").strip() for t in remote_tracks if str(t.get("videoId") or "").strip()]
+    local_vids = [
+        localcache.extract_youtube_id(str(r.get("url") or ""))
+        for r in local_rows
+    ]
+    local_vids = [v for v in local_vids if v]
+
+    if remote_vids == local_vids:
+        return local_rows, False
+
+    # Drift detected: map remote tracks to local database rows
+    own_conn = conn is None
+    c = conn or localcache.connect()
+    try:
+        try:
+            from . import track_analysis
+            track_analysis.ensure_schema(c)
+        except Exception:
+            pass
+        try:
+            from . import genre
+            genre.ensure_schema(c)
+        except Exception:
+            pass
+
+        reconciled_rows: list[dict[str, Any]] = []
+        for t in remote_tracks:
+            vid = str(t.get("videoId") or "").strip()
+            if not vid:
+                continue
+            title = str(t.get("title") or "").strip()
+            artists = t.get("artists") or []
+            artist = str(artists[0].get("name") if artists and isinstance(artists[0], dict) else "").strip()
+
+            found = c.execute(
+                """
+                SELECT t.track_id, t.artist, t.title, s.url, s.kind,
+                       g.genre, a.energy, a.bpm, a.detected_key AS key
+                FROM sources s
+                JOIN tracks t ON t.track_id = s.track_id
+                LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                LEFT JOIN track_genre g ON g.track_id = t.track_id
+                WHERE s.url LIKE ?
+                LIMIT 1
+                """,
+                (f"%{vid}%",),
+            ).fetchone()
+
+            if found:
+                reconciled_rows.append({
+                    "track_id": found["track_id"],
+                    "artist": found["artist"] or artist,
+                    "title": found["title"] or title,
+                    "video_id": vid,
+                    "url": found["url"] or f"https://music.youtube.com/watch?v={vid}",
+                    "kind": found["kind"] or "youtube_music",
+                    "genre": found["genre"],
+                    "energy": found["energy"],
+                    "bpm": found["bpm"],
+                    "key": found["key"],
+                })
+            else:
+                reconciled_rows.append({
+                    "track_id": None,
+                    "artist": artist,
+                    "title": title,
+                    "video_id": vid,
+                    "url": f"https://music.youtube.com/watch?v={vid}",
+                    "kind": "youtube_music",
+                    "genre": None,
+                    "energy": None,
+                    "bpm": None,
+                    "key": None,
+                })
+
+        # Update saved playlist in SQLite
+        saved_pl = localcache.find_saved_playlist_by_id(playlist_id, conn=c)
+        name = saved_pl.get("name", "") if saved_pl else f"Playlist {playlist_id}"
+        query = saved_pl.get("search_query", "") if saved_pl else ""
+        saved_tracks = [
+            {
+                "position": idx + 1,
+                "track_id": r.get("track_id"),
+                "artist": r.get("artist") or "",
+                "title": r.get("title") or "",
+                "video_id": localcache.extract_youtube_id(r.get("url") or "") or "",
+                "url": r.get("url") or "",
+            }
+            for idx, r in enumerate(reconciled_rows)
+        ]
+        localcache.save_playlist(playlist_id, name, search_query=query, tracks=saved_tracks, conn=c)
+        return reconciled_rows, True
+    finally:
+        if own_conn:
+            c.close()
 
 
 def import_ytmusic_playlist_to_library(

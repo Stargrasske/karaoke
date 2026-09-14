@@ -48,7 +48,7 @@ class Suggestion:
 
 def _seed_neighbours(track_id: int, k: int,
                      os_client: Any = None) -> tuple[list[search.SoundHit], str]:
-    """Nearest neighbours for one seed, CLAP first then spectral.
+    """Nearest neighbours for one seed, CLAP first then spectral, then acoustic CLAP genre.
 
     Returns the hits and which space answered, so the caller can report a
     result that mixed both rather than presenting two incomparable cosines as
@@ -58,7 +58,47 @@ def _seed_neighbours(track_id: int, k: int,
     if hits:
         return hits, "clap"
     hits = search.similar_sounding(track_id, k=k, os_client=os_client)
-    return hits, "spectral"
+    if hits:
+        return hits, "spectral"
+    # Fallback to acoustic CLAP classification in SQLite when vector search is unavailable
+    try:
+        from . import localcache
+        with localcache.connect() as conn:
+            g_row = localcache.genre_for(track_id, conn)
+            if g_row and g_row["genre"]:
+                seed_genre = str(g_row["genre"]).strip().casefold()
+                rows = conn.execute(
+                    """
+                    SELECT t.track_id, t.artist, t.title, COALESCE(g.score, 0.8) as score
+                    FROM tracks t
+                    JOIN track_genre g ON g.track_id = t.track_id
+                    WHERE lower(trim(g.genre)) = ? AND t.track_id != ?
+                    ORDER BY g.score DESC
+                    LIMIT ?
+                    """,
+                    (seed_genre, track_id, k),
+                ).fetchall()
+                if rows:
+                    return [
+                        search.SoundHit(
+                            track_id=int(r["track_id"]),
+                            artist=r["artist"] or "",
+                            title=r["title"] or "",
+                            similarity=float(r["score"] or 0.8),
+                            source="clap_acoustic",
+                        )
+                        for r in rows
+                    ], "clap_acoustic"
+    except Exception:
+        pass
+    return [], "none"
+
+
+def suggest_for_track(track_id: int, *, limit: int = 10,
+                      per_artist: int = PER_ARTIST,
+                      os_client: Any = None) -> list[Suggestion]:
+    """Find tracks that acoustically sound like a single target track."""
+    return suggest_for_queue([track_id], limit=limit, per_artist=per_artist, os_client=os_client)
 
 
 def suggest_for_queue(track_ids: list[int], *, limit: int = 10,

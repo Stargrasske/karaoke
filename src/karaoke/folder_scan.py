@@ -130,6 +130,29 @@ def scan_and_ingest_folder(
                     album = fp.album or album
                     stats["fingerprinted"] += 1
 
+            # 1d. Fallback: Filename parser for "Artist - Title.ext" pattern
+            if not artist or artist.lower() in ("unknown", "track") or title == path.stem:
+                import re
+                stem = path.stem
+                parts = re.split(r'\s+-\s+', stem)
+                if len(parts) == 1 and "-" in stem:
+                    parts = re.split(r'-', stem)
+                
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) >= 2:
+                    fn_artist = parts[0]
+                    fn_title = " - ".join(parts[1:])
+                    # Clean track number prefixes (e.g. "07 ", "(01) ", "01. ", "01 - ")
+                    fn_artist_clean = re.sub(r'^(?:\d+|\(\d+\))[\s._-]*', '', fn_artist).strip()
+                    if fn_artist_clean:
+                        fn_artist = fn_artist_clean
+                    
+                    if fn_artist and fn_title:
+                        if not artist or artist.lower() in ("unknown", "track"):
+                            artist = fn_artist
+                        if title == path.stem:
+                            title = fn_title
+
             if not artist or not title:
                 log.warning("Skipping %s: missing artist/title after tags & fingerprint", path.name)
                 emit("skip", index=index, total=len(audio_files), path=str(path), name=path.name,
@@ -256,6 +279,14 @@ def scan_and_ingest_folder(
                     ),
                     conn=c,
                 )
+
+            # If key/BPM analysis or lyric timing is missing, dispatch to background workers
+            if not (analysis_res and analysis_res.key and analysis_res.bpm):
+                try:
+                    from .postprocess_queue import enqueue_if_needed
+                    enqueue_if_needed(artist, title, yt_url or str(path), conn=c)
+                except Exception:
+                    log.debug("folder_scan: postprocess enqueue failed for %s - %s", artist, title)
 
             # Save Genre
             if genre_verdict:

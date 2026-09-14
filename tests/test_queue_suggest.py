@@ -62,3 +62,43 @@ def test_per_artist_cap(monkeypatch):
 
 def test_empty_queue_returns_nothing():
     assert queue_suggest.suggest_for_queue([], limit=5) == []
+
+
+def test_suggest_for_track(monkeypatch):
+    monkeypatch.setattr(queue_suggest.search, "sounds_like_track",
+                        lambda tid, k, os_client=None: [_hit(50, "Artist", "Song", 0.95)])
+    out = queue_suggest.suggest_for_track(1, limit=5)
+    assert len(out) == 1
+    assert out[0].track_id == 50
+    assert out[0].space == "clap"
+
+
+def test_falls_back_to_acoustic_genre_when_no_vectors(tmp_path, monkeypatch):
+    from karaoke import localcache
+
+    db_path = tmp_path / "acoustic_fallback.db"
+    conn = localcache.connect(db_path)
+    try:
+        conn.executescript("""
+            INSERT INTO tracks (track_id, artist, title) VALUES
+                (1, 'Seed Artist', 'Seed Track'),
+                (2, 'Peer Artist', 'Similar Sonic Track'),
+                (3, 'Other Artist', 'Different Track');
+            INSERT INTO track_genre (track_id, genre, score, labelled_at) VALUES
+                (1, 'acoustic blues', 0.92, 1),
+                (2, 'acoustic blues', 0.88, 1),
+                (3, 'techno', 0.95, 1);
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+    real_connect = localcache.connect
+    monkeypatch.setattr(localcache, "connect", lambda *a, **kw: real_connect(db_path))
+    monkeypatch.setattr(queue_suggest.search, "sounds_like_track", lambda tid, k, os_client=None: [])
+    monkeypatch.setattr(queue_suggest.search, "similar_sounding", lambda tid, k, os_client=None: [])
+
+    out = queue_suggest.suggest_for_track(1, limit=5)
+    assert len(out) == 1
+    assert out[0].track_id == 2
+    assert out[0].space == "clap_acoustic"

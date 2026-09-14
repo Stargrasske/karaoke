@@ -11,8 +11,8 @@ WorkingDirectory=/home/tina/karaoke
 Environment=PYTHONPATH=/home/tina/karaoke/src
 Environment=KARAOKE_ORCHESTRATOR=celery
 Environment=RABBITMQ_HOST=localhost
-# Pull YouTube cookies from Chrome so downloads/captions authenticate as you.
-Environment=KARAOKE_COOKIES_FROM_BROWSER=chrome
+# Pull YouTube cookies from Chrome so downloads/captions authenticate as you (schizoid69@gmail.com).
+Environment="KARAOKE_COOKIES_FROM_BROWSER=chrome+GNOMEKEYRING:Profile 2"
 # Analysis is librosa/numpy; cap thread pools and let Celery manage process concurrency.
 Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1

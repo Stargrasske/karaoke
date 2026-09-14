@@ -226,3 +226,41 @@ def test_a_known_artist_blocks_the_swap(tmp_path):
         assert harvest_albums.artist_used_elsewhere(conn, "Faint", 3) is False
     finally:
         conn.close()
+
+
+def test_search_with_genre_filter(tmp_path):
+    from karaoke import localcache
+    from karaoke import librarysearch as ls
+
+    conn = localcache.connect(tmp_path / "genre_search.db")
+    try:
+        conn.executescript("""
+            INSERT INTO tracks (track_id, artist, title) VALUES
+                (1, 'Artist A', 'Nothing Else Matters'),
+                (2, 'Artist B', 'Nothing Compares'),
+                (3, 'Artist C', 'Nothing Stays');
+            INSERT INTO track_genre (track_id, genre, score, labelled_at) VALUES
+                (1, 'heavy metal', 0.9, 1),
+                (2, 'pop', 0.8, 1),
+                (3, 'jazz', 0.85, 1);
+        """)
+        conn.commit()
+
+        metal_hits = ls.search("nothing", conn, genre="heavy metal")
+        assert len(metal_hits) == 1
+        assert metal_hits[0].track_id == 1
+        assert metal_hits[0].genre == "heavy metal"
+
+        pop_hits = ls.search("nothing", conn, genre="pop")
+        assert len(pop_hits) == 1
+        assert pop_hits[0].track_id == 2
+        assert pop_hits[0].genre == "pop"
+
+        all_hits = ls.search("nothing", conn, genre="all")
+        assert len(all_hits) == 3
+
+        none_hits = ls.search("nothing", conn, genre="reggae")
+        assert len(none_hits) == 0
+    finally:
+        conn.close()
+
