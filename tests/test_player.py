@@ -553,11 +553,42 @@ def test_active_line_is_bold_over_a_mood_background():
 
 def test_active_word_is_highlighted_and_moves():
     def cols(t):
-        return [s.start for s in _body(t).spans if "magenta" in str(s.style)]
+        return [s.start for s in _body(t).spans if "yellow" in str(s.style) or "cyan" in str(s.style)]
 
     early, late = cols(0.2), cols(8.0)
     assert early and late
     assert min(late) > min(early)
+
+
+def test_mood_highlight_palette_and_art_school_rule():
+    from karaoke.player import _MOOD_BG, _MOOD_HIGHLIGHT
+
+    # Art school principle: "WIT op GEEL, daarvan kijk je SCHEEL!"
+    # Never pair white text with yellow background
+    for mood, style in _MOOD_HIGHLIGHT.items():
+        assert "white on yellow" not in style.lower(), f"Violates art school rule in {mood}: {style}"
+        assert "white on bright_yellow" not in style.lower(), f"Violates art school rule in {mood}: {style}"
+
+    # Angry line background is red; highlight must not be red/magenta and must pop with high contrast
+    angry_hl = _MOOD_HIGHLIGHT["angry"]
+    assert "red" not in angry_hl.lower().split()
+    assert "magenta" not in angry_hl.lower()
+    assert "black on bright_yellow" in angry_hl
+
+    # Sad mood uses cool bright_cyan
+    assert "black on bright_cyan" in _MOOD_HIGHLIGHT["sad"]
+
+    # Verify rendered spans in angry mood
+    angry_body = _body(3.0, mood="angry")
+    styles = [str(s.style) for s in angry_body.spans]
+    assert any("on red" in s for s in styles)
+    assert any("black on bright_yellow" in s for s in styles)
+
+    # Verify rendered spans in sad mood
+    sad_body = _body(3.0, mood="sad")
+    sad_styles = [str(s.style) for s in sad_body.spans]
+    assert any("on blue" in s for s in sad_styles)
+    assert any("black on bright_cyan" in s for s in sad_styles)
 
 
 def test_context_lines_surround_the_active_one():

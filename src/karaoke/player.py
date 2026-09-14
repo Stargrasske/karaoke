@@ -28,14 +28,27 @@ _PACE_SAMPLE_MAX_S = 15.0  # gaps longer than this are breaks, not sung lines
 # A gap at least this long counts as an instrumental break for `in_gap`.
 GAP_MIN_S = 6.0
 
-# Active-line background per detected mood (see sentiment.mood_of). Word highlight
-# stays magenta on top; neutral keeps the original blue.
+# Active-line background per detected mood (see sentiment.mood_of).
 _MOOD_BG = {
     "happy": "on green",
     "sad": "on blue",
     "angry": "on red",
     "tender": "on deep_pink4",
     "neutral": "on blue",
+}
+
+# Active-word highlight per detected mood.
+# Art school / ergonomics principle: "WIT op GEEL, daarvan kijk je SCHEEL!"
+# Never pair white text with a yellow background (1.07:1 contrast). For yellow highlights,
+# bold black text delivers 19.56:1 contrast (AAA rating).
+# In "angry" mood (red background), bright yellow highlight with black text pops sharply
+# with 6.65:1 contrast against the red line, resolving the issue where magenta blended in.
+_MOOD_HIGHLIGHT = {
+    "happy": "bold black on bright_yellow",
+    "sad": "bold black on bright_cyan",
+    "angry": "bold black on bright_yellow",
+    "tender": "bold black on bright_yellow",
+    "neutral": "bold black on bright_yellow",
 }
 # Panel border colour per mood — also the colour used for the beat "flash".
 _MOOD_BORDER = {
@@ -468,11 +481,12 @@ def _append_lyric_line(body, line: str, *, kind: str, frac: float = 0.0,
                        mood: str = "neutral", word: Optional[int] = None) -> None:
     """Append one lyric line to a Rich Text body.
 
-    kind: 'active' (current line — highlight the current word in purple over a
-    mood-tinted background), 'past' (dim) or 'future' (grey). `frac` drives the
-    word highlight unless an explicit `word` index is supplied (real per-word
-    timings); `mood` (from sentiment.mood_of) picks the active-line
-    background. Imports Rich lazily so pure/tested code needn't depend on it.
+    kind: 'active' (current line — highlight the current word in high-contrast
+    palette over a mood-tinted background), 'past' (dim) or 'future' (grey).
+    `frac` drives the word highlight unless an explicit `word` index is supplied
+    (real per-word timings); `mood` (from sentiment.mood_of) picks the active-line
+    background and corresponding high-contrast word highlight. Imports Rich
+    lazily so pure/tested code needn't depend on it.
     """
     if kind == "past":
         body.append("  " + line + "\n", style="dim")
@@ -480,9 +494,10 @@ def _append_lyric_line(body, line: str, *, kind: str, frac: float = 0.0,
     if kind == "future":
         body.append("  " + line + "\n", style="grey70")
         return
-    # active line: word-level purple highlight over a mood-tinted background
+    # active line: word-level high-contrast highlight over a mood-tinted background
     bg = _MOOD_BG.get(mood, "on blue")
     base = f"bold white {bg}"
+    hl_style = _MOOD_HIGHLIGHT.get(mood, "bold black on bright_yellow")
     wi = active_word_index(line, frac) if word is None else word
     body.append("♪ ", style=base)
     if wi < 0:
@@ -491,7 +506,7 @@ def _append_lyric_line(body, line: str, *, kind: str, frac: float = 0.0,
     words = line.split()
     for j, w in enumerate(words):
         if j == wi:
-            body.append(w, style="bold white on magenta")
+            body.append(w, style=hl_style)
         else:
             body.append(w, style=base)
         body.append(" " if j < len(words) - 1 else "\n", style=base)
