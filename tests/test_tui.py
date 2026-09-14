@@ -1510,3 +1510,307 @@ def test_a_short_title_still_gets_the_big_face_and_a_block_byline():
     out = app.title_banner("Swans", "Screen Shot", 74, 6)
     byline = bigtext.render_line("Swans", bigtext.SMALL_FONT).rows
     assert out.splitlines()[-len(byline):] == list(byline)
+
+
+def test_load_tracks_loads_all_without_limit(tmp_path):
+    """_load_tracks without limit loads all matching tracks rather than capping at 70."""
+    from karaoke import localcache
+    from karaoke.lyrics import Lyrics
+    from karaoke.tui import KaraokeTui
+
+    conn = localcache.connect(tmp_path / "browse_all.db")
+    try:
+        for i in range(85):
+            localcache.add_track_and_lyrics(
+                f"Artist {i:02d}", f"Song {i:02d}", Lyrics(plain="test", source="lrclib"),
+                url=f"https://youtu.be/test{i}", conn=conn)
+        conn.commit()
+
+        app = KaraokeTui.__new__(KaraokeTui)
+        app._filter = "all"
+        app._genre_filter = "all"
+        app._sort = "artist"
+        app._song_data = []
+
+        # No limit: all 85 loaded
+        app._load_tracks(conn, only_working=False)
+        assert len(app._song_data) == 85
+
+        # With explicit limit: respects limit
+        app._song_data = []
+        app._load_tracks(conn, only_working=False, limit=10)
+        assert len(app._song_data) == 10
+    finally:
+        conn.close()
+
+
+def test_load_tracks_sql_sort_order(tmp_path):
+    """_load_tracks performs sorting directly in SQL across the database."""
+    from karaoke import localcache
+    from karaoke.lyrics import Lyrics
+    from karaoke.tui import KaraokeTui
+
+    conn = localcache.connect(tmp_path / "browse_sort.db")
+    try:
+        from karaoke.track_analysis import ensure_schema
+        ensure_schema(conn)
+
+        # Track 1: low play_count, high energy
+        localcache.add_track_and_lyrics(
+            "Alpha", "Song A", Lyrics(plain="test", source="lrclib"),
+            url="https://youtu.be/a", conn=conn)
+        t1 = localcache.find_track_id("Alpha", "Song A", conn=conn)
+        conn.execute("UPDATE tracks SET play_count = 1 WHERE track_id = ?", (t1,))
+        conn.execute("INSERT INTO track_analysis (track_id, energy, bpm, updated_at) VALUES (?, 0.9, 140, 1.0)", (t1,))
+
+        # Track 2: high play_count, low energy
+        localcache.add_track_and_lyrics(
+            "Beta", "Song B", Lyrics(plain="test", source="lrclib"),
+            url="https://youtu.be/b", conn=conn)
+        t2 = localcache.find_track_id("Beta", "Song B", conn=conn)
+        conn.execute("UPDATE tracks SET play_count = 50 WHERE track_id = ?", (t2,))
+        conn.execute("INSERT INTO track_analysis (track_id, energy, bpm, updated_at) VALUES (?, 0.2, 80, 1.0)", (t2,))
+
+        # Track 3: mid play_count, mid energy
+        localcache.add_track_and_lyrics(
+            "Gamma", "Song C", Lyrics(plain="test", source="lrclib"),
+            url="https://youtu.be/c", conn=conn)
+        t3 = localcache.find_track_id("Gamma", "Song C", conn=conn)
+        conn.execute("UPDATE tracks SET play_count = 10 WHERE track_id = ?", (t3,))
+        conn.execute("INSERT INTO track_analysis (track_id, energy, bpm, updated_at) VALUES (?, 0.5, 110, 1.0)", (t3,))
+        conn.commit()
+
+        app = KaraokeTui.__new__(KaraokeTui)
+        app._filter = "all"
+        app._genre_filter = "all"
+
+        # Most played
+        app._sort = "most_played"
+        app._song_data = []
+        app._load_tracks(conn, only_working=False)
+        assert [r["title"] for r in app._song_data] == ["Song B", "Song C", "Song A"]
+
+        # Least played
+        app._sort = "least_played"
+        app._song_data = []
+        app._load_tracks(conn, only_working=False)
+        assert [r["title"] for r in app._song_data] == ["Song A", "Song C", "Song B"]
+
+        # Energy descending
+        app._sort = "energy_desc"
+        app._song_data = []
+        app._load_tracks(conn, only_working=False)
+        assert [r["title"] for r in app._song_data] == ["Song A", "Song C", "Song B"]
+
+        # Energy ascending
+        app._sort = "energy_asc"
+        app._song_data = []
+        app._load_tracks(conn, only_working=False)
+        assert [r["title"] for r in app._song_data] == ["Song B", "Song C", "Song A"]
+    finally:
+        conn.close()
+
+
+def test_browse_toolbar_button_presses(monkeypatch):
+    """Clicking toolbar buttons triggers open, enqueue, or more-like-this."""
+    from textual.widgets import Button
+    from karaoke.tui import KaraokeTui
+
+    app = KaraokeTui.__new__(KaraokeTui)
+    called = []
+    monkeypatch.setattr(app, "action_select", lambda: called.append("select"))
+    monkeypatch.setattr(app, "action_enqueue_selected", lambda: called.append("enqueue"))
+    monkeypatch.setattr(app, "action_more_like_this", lambda: called.append("more"))
+
+    class FakeBtn:
+        def __init__(self, bid):
+            self.id = bid
+
+    class FakePressed:
+        def __init__(self, bid):
+            self.button = FakeBtn(bid)
+
+    app.on_button_pressed(FakePressed("btn-browse-open"))
+    assert called == ["select"]
+
+    app.on_button_pressed(FakePressed("btn-browse-enqueue"))
+    assert called == ["select", "enqueue"]
+
+    app.on_button_pressed(FakePressed("btn-browse-more"))
+    assert called == ["select", "enqueue", "more"]
+
+
+def test_browse_genre_select_sync(monkeypatch):
+    """Changing browse-genre-select synchronizes genre-select and triggers mood update."""
+    from textual.widgets import Select
+    from karaoke.tui import KaraokeTui
+
+    app = KaraokeTui.__new__(KaraokeTui)
+    app._genre_filter = "all"
+    applied = []
+    monkeypatch.setattr(app, "_apply_mood_change", lambda: applied.append(True))
+
+    class FakeSelectWidget:
+        def __init__(self, sid, val):
+            self.id = sid
+            self.value = val
+
+    sidebar_select = FakeSelectWidget("genre-select", "all")
+    browse_select = FakeSelectWidget("browse-genre-select", "all")
+
+    def fake_query_one(sel_id, *args, **kwargs):
+        if sel_id == "#genre-select":
+            return sidebar_select
+        if sel_id == "#browse-genre-select":
+            return browse_select
+        raise AssertionError(f"Unexpected query {sel_id}")
+
+    monkeypatch.setattr(app, "query_one", fake_query_one)
+
+    class FakeSelectChanged:
+        def __init__(self, widget, val):
+            self.select = widget
+            self.value = val
+
+    # Simulate user picking "Rock" in browse-genre-select
+    app.on_select_changed(FakeSelectChanged(browse_select, "Rock"))
+    assert app._genre_filter == "Rock"
+    assert sidebar_select.value == "Rock"
+    assert len(applied) == 1
+
+    # Simulate user picking "Jazz" in sidebar genre-select
+    app.on_select_changed(FakeSelectChanged(sidebar_select, "Jazz"))
+    assert app._genre_filter == "Jazz"
+    assert browse_select.value == "Jazz"
+    assert len(applied) == 2
+
+
+def test_browse_count_update(monkeypatch):
+    """_update_browse_count properly formats and updates #browse-count widget."""
+    from textual.widgets import Static
+    from karaoke.tui import KaraokeTui
+
+    app = KaraokeTui.__new__(KaraokeTui)
+    app._song_data = [{"title": f"Song {i}"} for i in range(1234)]
+    app._filter = "working"
+    app._genre_filter = "Rock"
+
+    updated = []
+
+    class FakeStatic:
+        def update(self, text):
+            updated.append(text)
+
+    count_lbl = FakeStatic()
+    monkeypatch.setattr(app, "query_one", lambda sel, *args, **kwargs: count_lbl)
+
+    app._update_browse_count()
+    assert updated == ["1,234 tracks (working · Rock)"]
+
+
+def test_filter_and_set_queue_does_not_hide_library(monkeypatch):
+    """_filter_and_set_queue must never add -off class to #library."""
+    from karaoke.tui import KaraokeTui
+
+    app = KaraokeTui.__new__(KaraokeTui)
+    app._unfiltered_queue = [{"title": "Track 1", "artist": "Artist 1"}]
+    app._queue = []
+    app._queue_is_wildcard = False
+    app._queue_at = -1
+
+    class FakeTable:
+        def __init__(self, tid):
+            self.id = tid
+            self.classes = set()
+            self.columns = [" "]
+        def set_class(self, val, cls_name):
+            if val:
+                self.classes.add(cls_name)
+            else:
+                self.classes.discard(cls_name)
+        def clear(self):
+            pass
+
+    q_table = FakeTable("queue")
+    monkeypatch.setattr(app, "query_one", lambda sel, *args, **kwargs: q_table)
+    monkeypatch.setattr(app, "_render_queue", lambda: None)
+    monkeypatch.setattr(app, "notify", lambda *a, **k: None)
+
+    app._filter_and_set_queue()
+    assert "-on" in q_table.classes
+    assert "-off" not in q_table.classes
+
+
+def test_show_browse_removes_off_class_and_focuses_library(monkeypatch):
+    """_show_browse ensures -off is stripped and library is focused."""
+    from karaoke.tui import KaraokeTui
+
+    app = KaraokeTui.__new__(KaraokeTui)
+
+    class FakeWidget:
+        def __init__(self, wid, classes=None):
+            self.id = wid
+            self.classes = set(classes or [])
+            self.focused = False
+        def add_class(self, cls):
+            self.classes.add(cls)
+        def remove_class(self, cls):
+            self.classes.discard(cls)
+        def focus(self):
+            self.focused = True
+
+    overlay = FakeWidget("browse-overlay")
+    lib = FakeWidget("library", classes=["-off"])
+
+    def fake_query_one(sel_id, *args, **kwargs):
+        if sel_id == "#browse-overlay":
+            return overlay
+        if sel_id == "#library":
+            return lib
+        if sel_id == "#browse-count":
+            return FakeWidget("browse-count")
+        raise AssertionError(f"Unexpected query {sel_id}")
+
+    monkeypatch.setattr(app, "query_one", fake_query_one)
+    monkeypatch.setattr(app, "_update_browse_count", lambda: None)
+
+    app._show_browse()
+    assert "-visible" in overlay.classes
+    assert "-off" not in lib.classes
+    assert lib.focused is True
+
+
+def test_on_data_table_row_highlighted_ignores_non_library(monkeypatch):
+    """RowHighlighted from queue table must not trigger _show_selected_song."""
+    from karaoke.tui import KaraokeTui
+
+    app = KaraokeTui.__new__(KaraokeTui)
+    calls = []
+    monkeypatch.setattr(app, "_show_selected_song", lambda: calls.append(True))
+
+    class FakeEvent:
+        def __init__(self, tid):
+            class FakeDataTable:
+                id = tid
+            self.data_table = FakeDataTable()
+
+    app.on_data_table_row_highlighted(FakeEvent("queue"))
+    assert len(calls) == 0
+
+    app.on_data_table_row_highlighted(FakeEvent("library"))
+    assert len(calls) == 1
+
+
+def test_selected_song_safely_handles_missing_library(monkeypatch):
+    """_selected_song returns None without raising if #library cannot be queried."""
+    from karaoke.tui import KaraokeTui
+
+    app = KaraokeTui.__new__(KaraokeTui)
+    app._song_data = [{"title": "Song 1"}]
+
+    def boom(*a, **k):
+        raise RuntimeError("Screen unmounted")
+
+    monkeypatch.setattr(app, "query_one", boom)
+    assert app._selected_song() is None
+

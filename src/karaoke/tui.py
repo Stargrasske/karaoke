@@ -1046,8 +1046,6 @@ class KaraokeTui(App):
     /* Hidden until there is a list, so the lyrics keep the full pane. */
     #queue { display: none; height: 10; border: round cyan; margin-top: 1; }
     #queue.-on { display: block; }
-    #library { display: block; height: 10; border: round cyan; margin-top: 1; }
-    #library.-off { display: none; }
     /* In the left column now, with the other per-track facts. Auto height
        because it holds two or three lines depending on what is known, and a
        fixed 6 left a gap under the short case. */
@@ -1094,9 +1092,9 @@ class KaraokeTui(App):
        `align` is unavailable) — if width/height change, offset must too. */
     #browse-overlay {
         layer: overlay; display: none;
-        width: 80%; height: 80%; offset: 10% 10%;
+        width: 96%; height: 94%; offset: 2% 1%;
         border: round cyan; border-title-align: center;
-        background: $surface; padding: 1 2;
+        background: $surface; padding: 0 1;
     }
     #browse-overlay.-visible { display: block; }
 
@@ -1118,11 +1116,43 @@ class KaraokeTui(App):
     Screen.-focus #transport-bar { display: none; }
     Screen.-focus #statusbar { display: none; }
     Screen.-focus Header { display: none; }
-    #browse-head { height: auto; margin-bottom: 1; }
-    #browse-head Static { width: 8; content-align: left middle; }
+    #browse-head { height: 3; margin-bottom: 0; }
+    #browse-head Static { width: auto; min-width: 6; content-align: left middle; padding-right: 1; }
     #filter-select, #mood-select, #genre-select, #sort-select { width: 34; }
-    #library { height: 1fr; }
-    #log-label, #log-path { color: $text-muted; height: 1; }
+    #browse-head Select {
+        width: 1fr; min-width: 12; height: 3; max-height: 3;
+    }
+    #library {
+        height: 1fr;
+        border: round cyan;
+        margin-top: 0;
+        display: block;
+    }
+    #browse-toolbar {
+        height: 3;
+        margin-top: 0;
+        layout: horizontal;
+    }
+    #browse-toolbar Button {
+        min-width: 10;
+        height: 3;
+        margin-right: 1;
+        padding: 0 1;
+    }
+    #browse-count {
+        width: 1fr;
+        height: 3;
+        content-align: right middle;
+        color: $text-muted;
+        padding-right: 1;
+    }
+    #log-label {
+        width: auto;
+        height: 3;
+        content-align: right middle;
+        color: $text-muted;
+        margin-right: 1;
+    }
     """
 
     BINDINGS = [
@@ -1306,17 +1336,24 @@ class KaraokeTui(App):
         # lyrics no space and does not reflow them.
         with Container(id="browse-overlay") as overlay:
             overlay.border_title = "Library"
-            overlay.border_subtitle = "H close · ? keys"
+            overlay.border_subtitle = "Enter open · a add to queue · M more like this · H close"
             with Horizontal(id="browse-head"):
                 yield Static("Filter")
                 yield Select(FILTER_OPTIONS, value="working", id="filter-select",
+                             allow_blank=False)
+                yield Static("Genre", classes="browse-label")
+                yield Select(genre_filter_options(), value="all", id="browse-genre-select",
                              allow_blank=False)
                 yield Static("Sort", classes="browse-label")
                 yield Select(SORT_OPTIONS, value="energy_desc", id="browse-sort-select",
                              allow_blank=False)
             yield DataTable(id="library", cursor_type="row")
-            yield Static(f"log: {self._log_level}", id="log-label")
-            yield Static(f"logs: {LOG_FILE}", id="log-path")
+            with Horizontal(id="browse-toolbar"):
+                yield Button("▶ Open (Enter)", id="btn-browse-open", variant="primary")
+                yield Button("➕ Queue (a)", id="btn-browse-enqueue", variant="default")
+                yield Button("✨ Similar (M)", id="btn-browse-more", variant="default")
+                yield Static(f"log: {self._log_level}", id="log-label")
+                yield Static("", id="browse-count")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1455,19 +1492,25 @@ class KaraokeTui(App):
             elif self._mood_filter in ("mellow", "all"):
                 self._mood_level = 0.0
             self._apply_mood_change()
-        elif event.select.id == "genre-select":
+        elif event.select.id in ("genre-select", "browse-genre-select"):
             self._genre_filter = str(event.value)
+            for sel_id in ("#genre-select", "#browse-genre-select"):
+                try:
+                    sel = self.query_one(sel_id, Select)
+                    if sel.value != self._genre_filter:
+                        sel.value = self._genre_filter
+                except Exception:
+                    pass
             self._apply_mood_change()
         elif event.select.id in ("sort-select", "browse-sort-select"):
             self._sort = str(event.value)
-            try:
-                self.query_one("#sort-select", Select).value = self._sort
-            except Exception:
-                pass
-            try:
-                self.query_one("#browse-sort-select", Select).value = self._sort
-            except Exception:
-                pass
+            for sel_id in ("#sort-select", "#browse-sort-select"):
+                try:
+                    sel = self.query_one(sel_id, Select)
+                    if sel.value != self._sort:
+                        sel.value = self._sort
+                except Exception:
+                    pass
             self._apply_mood_change()
 
     def _render_mood_slider(self) -> None:
@@ -1509,7 +1552,10 @@ class KaraokeTui(App):
 
 
     def load_songs(self) -> None:
-        table = self.query_one("#library", DataTable)
+        try:
+            table = self.query_one("#library", DataTable)
+        except Exception:
+            return
         table.clear()
         self._song_data.clear()
         with localcache.connect() as conn:
@@ -1591,8 +1637,9 @@ class KaraokeTui(App):
                 ),
             )
         self._song_data = filtered
+        self._update_browse_count()
 
-    def _load_spotify(self, conn) -> None:
+    def _load_spotify(self, conn, *, limit: int | None = None) -> None:
         """Tracks that have a Spotify source, joined to that source.
 
         _load_tracks deliberately ranks spotify *below* every browser-openable
@@ -1603,8 +1650,17 @@ class KaraokeTui(App):
         them to the web player and navigates the existing Chrome window.
         """
         cur = conn.cursor()
+        sort_mode = getattr(self, "_sort", "artist")
+        if sort_mode == "most_played":
+            order_sql = "t.play_count DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        elif sort_mode == "least_played":
+            order_sql = "t.play_count ASC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        else:
+            order_sql = "t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+
+        limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
         cur.execute(
-            """
+            f"""
             SELECT t.track_id, t.artist, t.title,
                    s.url AS url, s.kind AS kind,
                    COALESCE(l.source, '') AS lyric_source,
@@ -1616,10 +1672,9 @@ class KaraokeTui(App):
             LEFT JOIN lyrics l
               ON t.track_id = l.track_id AND l.kind = 'approved'
             GROUP BY t.track_id
-            ORDER BY t.artist, t.title
-            LIMIT :browse_limit
+            ORDER BY {order_sql}
+            {limit_sql}
             """,
-            {"browse_limit": INITIAL_BROWSE_LIMIT},
         )
         for row in cur.fetchall():
             self._song_data.append({
@@ -1633,7 +1688,7 @@ class KaraokeTui(App):
                 "plain_lyrics": row["plain_lyrics"],
             })
 
-    def _load_tracks(self, conn, *, only_working: bool) -> None:
+    def _load_tracks(self, conn, *, only_working: bool, limit: int | None = None) -> None:
         cur = conn.cursor()
         try:
             from .track_analysis import ensure_schema
@@ -1650,7 +1705,9 @@ class KaraokeTui(App):
         artist_genres_map = localcache.get_all_artist_genres_map(conn) if has_artist_genres else {}
 
         where_clauses = []
-        params = {"browse_limit": INITIAL_BROWSE_LIMIT}
+        params = {}
+        if limit is not None:
+            params["browse_limit"] = limit
         genre_filter = str(getattr(self, "_genre_filter", "all") or "all").strip()
         if genre_filter != "all":
             params["genre_filter"] = genre_filter
@@ -1677,6 +1734,26 @@ class KaraokeTui(App):
         if only_working:
             where_clauses.append("(COALESCE(l.synced_lyrics, '') != '' OR COALESCE(l.plain_lyrics, '') != '')")
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        sort_mode = getattr(self, "_sort", "artist")
+        if sort_mode == "most_played":
+            order_sql = "t.play_count DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        elif sort_mode == "least_played":
+            order_sql = "t.play_count ASC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        elif sort_mode == "energy_desc":
+            order_sql = "a.energy DESC NULLS LAST, a.bpm DESC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        elif sort_mode == "energy_asc":
+            order_sql = "a.energy ASC NULLS LAST, a.bpm ASC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        elif sort_mode == "bpm_desc":
+            order_sql = "a.bpm DESC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        elif sort_mode == "bpm_asc":
+            order_sql = "a.bpm ASC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        elif sort_mode == "key":
+            order_sql = "a.detected_key ASC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+        else:
+            order_sql = "t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+
+        limit_sql = "LIMIT :browse_limit" if limit is not None else ""
 
         # Prefer a browser-openable source (youtube/http) over spotify so Enter
         # opens in the browser. Deterministic per track (see browse.py).
@@ -1713,8 +1790,8 @@ class KaraokeTui(App):
               ON g.track_id = t.track_id
             {where_sql}
             GROUP BY t.track_id
-            ORDER BY t.artist, t.title
-            LIMIT :browse_limit
+            ORDER BY {order_sql}
+            {limit_sql}
             """,
             params,
         )
@@ -1760,7 +1837,8 @@ class KaraokeTui(App):
 
     # -- selection / previews --------------------------------------------
     def on_data_table_row_highlighted(self, _e: DataTable.RowHighlighted) -> None:
-        self._show_selected_song()
+        if getattr(_e.data_table, "id", "") == "library":
+            self._show_selected_song()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         # One handler for both tables: the queue plays its row directly, the
@@ -1781,12 +1859,29 @@ class KaraokeTui(App):
         except Exception:
             return False
 
+    def _update_browse_count(self) -> None:
+        """Update live track count and filter info in the browse toolbar."""
+        try:
+            lbl = self.query_one("#browse-count", Static)
+            count = len(getattr(self, "_song_data", []) or [])
+            desc = getattr(self, "_filter", "working")
+            genre = str(getattr(self, "_genre_filter", "all") or "all").strip()
+            if genre and genre != "all":
+                desc = f"{desc} · {genre}"
+            lbl.update(f"{count:,} tracks ({desc})")
+        except Exception:
+            pass
+
     def _show_browse(self) -> None:
         try:
             self.query_one("#browse-overlay").add_class(self._BROWSE_OPEN)
-            self.query_one("#library", DataTable).focus()
+            lib = self.query_one("#library", DataTable)
+            if hasattr(lib, "remove_class"):
+                lib.remove_class("-off")
+            lib.focus()
         except Exception:
             pass
+        self._update_browse_count()
 
     def _hide_browse(self) -> None:
         try:
@@ -2387,22 +2482,14 @@ class KaraokeTui(App):
             random.SystemRandom().shuffle(rows)
         self._queue = rows
         table = self.query_one("#queue", DataTable)
-        try:
-            lib_table = self.query_one("#library", DataTable)
-        except Exception:
-            lib_table = None
 
         if not rows:
             table.set_class(False, "-on")
-            if lib_table:
-                lib_table.set_class(False, "-off")
             table.clear()
             if query:
                 self.notify(f"No matches for {query!r}", severity="warning")
             return
         table.set_class(True, "-on")
-        if lib_table:
-            lib_table.set_class(True, "-off")
         self._render_queue()
         if query:
             self.notify(f"{len(rows)} match(es) for {query!r}")
@@ -3690,11 +3777,18 @@ class KaraokeTui(App):
             self.notify("Track data updated from background event", severity="information")
 
     def _selected_song(self) -> SongRow | None:
-        table = self.query_one("#library", DataTable)
+        try:
+            table = self.query_one("#library", DataTable)
+        except Exception:
+            return None
         if not self._song_data:
             return None
-        if 0 <= table.cursor_row < len(self._song_data):
-            return self._song_data[table.cursor_row]
+        try:
+            row_idx = table.cursor_row
+            if 0 <= row_idx < len(self._song_data):
+                return self._song_data[row_idx]
+        except Exception:
+            pass
         return None
 
     def _show_selected_song(self) -> None:
@@ -3702,13 +3796,19 @@ class KaraokeTui(App):
         if self._det.is_active and self._timeline.lines:
             return
         song = self._selected_song()
-        lyrics = self.query_one("#lyrics", Static)
+        try:
+            lyrics = self.query_one("#lyrics", Static)
+        except Exception:
+            return
         lyrics.border_subtitle = None
         if song is None:
             lyrics.update("No songs match this filter yet.")
             self._update_mood("neutral")
             self._update_keybpm(None)
-            self.query_one("#ascii-visual", Static).update("sentiment / rhythm")
+            try:
+                self.query_one("#ascii-visual", Static).update("sentiment / rhythm")
+            except Exception:
+                pass
             return
         preview = lyric_preview(song)
         lyrics.update(preview or "No lyrics cached for this track yet.")
@@ -3948,6 +4048,12 @@ class KaraokeTui(App):
             self.action_toggle_shuffle()
         elif bid == "btn-repeat":
             self.action_toggle_repeat()
+        elif bid == "btn-browse-open":
+            self.action_select()
+        elif bid == "btn-browse-enqueue":
+            self.action_enqueue_selected()
+        elif bid == "btn-browse-more":
+            self.action_more_like_this()
 
     def action_seek_back(self) -> None:
         if self._det.is_active:
