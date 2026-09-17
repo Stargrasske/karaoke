@@ -1,0 +1,34 @@
+[Unit]
+Description=Karaoke outbox relay (forwards unified events to OpenSearch)
+Documentation=file:///home/tina/karaoke/docs/database.md
+After=network-online.target
+Wants=network-online.target
+PartOf=karaoke.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tina/karaoke
+Environment=PYTHONPATH=/home/tina/karaoke/src
+ExecStart=/home/tina/karaoke/.venv/bin/python -m karaoke.relay --sink opensearch
+SyslogIdentifier=karaoke-relay
+
+# Postgres and OpenSearch are system services, not user ones, so this unit
+# cannot order itself after them. It does not need to: a Postgres that is not
+# up yet fails the initial connect and systemd retries, and an OpenSearch that
+# is down is treated as SinkUnavailable -- the relay backs off and leaves the
+# backlog claimable rather than dead-lettering healthy events.
+Restart=always
+RestartSec=10
+
+# The relay is a tail-and-forward loop that spends nearly all its time parked
+# on a Postgres NOTIFY, so it costs nothing at idle. It is still background
+# work and must never compete with playback.
+Nice=10
+Slice=karaoke-postprocess.slice
+
+# One connection from the pool plus a bulk request buffer; a runaway here would
+# mean a leak rather than legitimate growth.
+MemoryMax=1G
+
+[Install]
+WantedBy=karaoke.target

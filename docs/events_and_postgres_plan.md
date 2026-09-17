@@ -6,9 +6,20 @@
     on PostgreSQL 18.4 via a `psycopg3` connection pool, which resolves the
     write-concurrency and `database is locked` limitations below.
 
-    Still **not** implemented: the unified `events` table, the outbox/relay
-    pattern, and logical-decoding publication. Event history remains in the
-    per-domain tables.
+    The **unified `events` table** (`karaoke.event_store`) and the **outbox
+    relay** (`karaoke.relay`) are both implemented. 25 444 events are
+    backfilled from the legacy tables and fully relayed into the
+    `karaoke-event-log` OpenSearch index. The relay wakes on `pg_notify`,
+    retries failures and dead-letters undeliverable events. See
+    [Unified event store](database.md#unified-event-store) and
+    [The relay worker](database.md#the-relay-worker).
+
+    The relay runs as `karaoke-relay.service` under `karaoke.target`.
+
+    Still **not** implemented: a RabbitMQ sink, runtime emission from the
+    analysis and alignment producers, logical-decoding publication, and any
+    retention policy. The legacy per-domain tables are still written and remain
+    the system of record.
 
     Note the audit below names `track_play_history` and
     `track_sources_history`, which exist in neither database — the real tables

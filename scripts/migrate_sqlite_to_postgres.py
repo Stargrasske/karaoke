@@ -327,6 +327,23 @@ CREATE TABLE IF NOT EXISTS queue_events (
 );
 CREATE INDEX IF NOT EXISTS idx_queue_events_ts ON queue_events(ts);
 
+-- Unified append-only event log (see karaoke.event_store). Not migrated from
+-- SQLite -- it has no SQLite counterpart. Populate it from the legacy tables
+-- with scripts/backfill_event_store.py after this migration runs.
+CREATE TABLE IF NOT EXISTS events (
+    seq            BIGSERIAL    NOT NULL,
+    event_id       UUID         PRIMARY KEY,
+    aggregate_type TEXT         NOT NULL,
+    aggregate_id   TEXT         NOT NULL,
+    event_type     TEXT         NOT NULL,
+    payload        JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    published_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_events_aggregate ON events (aggregate_type, aggregate_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_type_created ON events (event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_unpublished ON events (seq) WHERE published_at IS NULL;
 """
 
 TABLES = [

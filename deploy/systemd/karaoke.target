@@ -5,7 +5,7 @@ Documentation=file:///home/tina/karaoke/docs/howto-systemd-services.md
 # Celery now coordinates post-processing work and Flower exposes the dashboard.
 # The legacy karaoke-postprocess@.service remains installed for rollback/manual
 # debugging but is no longer started by the target.
-Wants=karaoke-api.service karaoke-ctrl-api.service karaoke-mq-forward.service karaoke-celery-worker.service karaoke-celery-flower.service karaoke-kiosk.service karaoke-webtui.service
+Wants=karaoke-api.service karaoke-ctrl-api.service karaoke-mq-forward.service karaoke-celery-worker.service karaoke-celery-flower.service karaoke-kiosk.service karaoke-webtui.service karaoke-relay.service
 
 [Install]
 WantedBy=default.target

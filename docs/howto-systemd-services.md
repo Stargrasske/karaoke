@@ -17,6 +17,7 @@ stack every 5 minutes.
 | `karaoke-celery-flower.service` | Flower dashboard for Celery tasks/workers | 5555 |
 | `karaoke-kiosk.service` | Google Chrome kiosk window running YT Music | 9222 |
 | `karaoke-webtui.service` | Textual Web TUI server for the browser interface | 8001 |
+| `karaoke-relay.service` | Outbox relay — forwards unified events to OpenSearch ([details](database.md#running-it-as-a-service)) | — |
 | `karaoke-postprocess@1..6.service` | Legacy pika post-processing workers (rollback/manual debugging) | — |
 | `karaoke-postprocess.slice` | Shared CPU/memory cap for all worker instances | — |
 | `karaoke-healthcheck.service` | One-shot health probe (run by the timer) | — |
@@ -94,6 +95,7 @@ degraded platform); **optional** checks only warn.
 | kind pods `Running` | ✅ | `karaoke` namespace. |
 | kiosk-chrome CDP `:9222` | ⛔️ opt | Unified player window. |
 | postgres-db | ✅ | Opens the DB + counts tracks. |
+| relay-backlog | ⛔️ opt | Outbox draining, no dead letters. |
 
 At boot the timer may fire before ports finish binding, so the check retries the
 whole sweep a few times (env-tunable: `KARAOKE_HEALTH_RETRIES`,
@@ -110,7 +112,29 @@ karaoke health: HEALTHY
   [✓] kind-pods      (req)  2 pod(s) Running
   [✓] kiosk-chrome   (opt)  CDP :9222
   [✓] postgres-db    (req)  18244 tracks
+  [✓] relay-backlog  (opt)  backlog empty
 ```
+
+### The relay-backlog probe
+
+It reports on the [outbox relay](database.md#the-relay-worker) in three states:
+
+| Report | Meaning |
+|---|---|
+| `backlog empty` / `N pending, oldest Ns` | Draining normally. |
+| `N event(s) pending, oldest Ns (> 600s) — is karaoke-relay running?` | Stalled. |
+| `N dead letter(s) — karaoke-relay --status, then --retry-dead` | Parked; needs an operator. |
+
+The stall test is backlog **age**, not size. A bulk import or a backfill
+legitimately queues tens of thousands of events that drain in seconds, so
+alerting on a count would cry wolf every time while still missing a relay that
+quietly died with three events pending. Tune the threshold with
+`KARAOKE_HEALTH_RELAY_MAX_AGE` (default 600s).
+
+The probe is **optional** on purpose. A stalled relay stops *forwarding*
+events, but nothing is lost — they stay in Postgres with `published_at IS NULL`
+and deliver once it recovers. Playback, search and the TUI are unaffected, so
+this must not mark the whole platform `DEGRADED`.
 
 !!! warning "`postgres-db` was reporting `DB error: 0`"
     The required DB probe used `fetchone()[0]`, which raises `KeyError: 0`

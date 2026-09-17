@@ -14,9 +14,11 @@ Checks:
   - kind cluster     karaoke ns pods Running          (required)
   - Kiosk Chrome CDP http://localhost:9222/json       (optional)
   - Postgres DB      openable + track count           (required)
+  - Relay backlog    outbox draining, no dead letters (optional)
 
 Env overrides: KARAOKE_API_PORT (8000), KARAOKE_CTRL_PORT (8765),
-RABBITMQ_HOST (localhost), KUBE_CONTEXT (kind-karaoke), K8S_NAMESPACE (karaoke).
+RABBITMQ_HOST (localhost), KUBE_CONTEXT (kind-karaoke), K8S_NAMESPACE (karaoke),
+KARAOKE_HEALTH_RELAY_MAX_AGE (600).
 """
 from __future__ import annotations
 
@@ -32,6 +34,10 @@ CTRL_PORT = os.environ.get("KARAOKE_CTRL_PORT", "8765")
 MQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
 KUBE_CONTEXT = os.environ.get("KUBE_CONTEXT", "kind-karaoke")
 K8S_NS = os.environ.get("K8S_NAMESPACE", "karaoke")
+# How stale the oldest pending event may get before the relay counts as stalled.
+# Generous by default: a bulk import queues a large backlog that the relay
+# drains in seconds, and a brief consumer outage is normal.
+RELAY_MAX_AGE = float(os.environ.get("KARAOKE_HEALTH_RELAY_MAX_AGE", "600"))
 
 OK, WARN, FAIL = "OK", "WARN", "FAIL"
 _MARK = {OK: "✓", WARN: "!", FAIL: "✗"}
@@ -114,6 +120,45 @@ def check_database() -> tuple[str, str]:
         return FAIL, f"DB error: {exc}"
 
 
+def check_relay_backlog() -> tuple[str, str]:
+    """Is the outbox relay actually draining, and has it parked anything?
+
+    Optional rather than required: a stalled relay stops *forwarding* events,
+    but nothing is lost -- they stay in Postgres with ``published_at IS NULL``
+    and deliver once it recovers. Playback, search and the TUI are unaffected,
+    so this must not mark the whole platform DEGRADED.
+    """
+    try:
+        sys.path.insert(0, "/home/tina/karaoke/src")
+        from datetime import datetime, timezone
+
+        from karaoke import event_store, localcache
+
+        with localcache.connect() as conn:
+            if not localcache.table_exists(conn, "events"):
+                return WARN, "events table missing (run the migration)"
+            pending = event_store.unpublished_count(conn)
+            dead = event_store.dead_letter_count(conn)
+            oldest = event_store.oldest_unpublished(conn)
+    except Exception as exc:
+        return WARN, f"relay check failed: {exc}"
+
+    if dead:
+        # Never self-heals: an operator must fix the consumer and requeue.
+        return WARN, (f"{dead} dead letter(s) — "
+                      f"karaoke-relay --status, then --retry-dead")
+
+    claimable = pending - dead
+    if not claimable:
+        return OK, "backlog empty"
+
+    age = (datetime.now(timezone.utc) - oldest).total_seconds() if oldest else 0
+    if age > RELAY_MAX_AGE:
+        return WARN, (f"{claimable} event(s) pending, oldest {int(age)}s "
+                      f"(> {RELAY_MAX_AGE}s) — is karaoke-relay running?")
+    return OK, f"{claimable} pending, oldest {int(age)}s"
+
+
 CHECKS = [
     ("library-api", check_library_api, True),
     ("control-api", check_control_api, False),
@@ -122,6 +167,7 @@ CHECKS = [
     ("kind-pods", check_kind_pods, True),
     ("kiosk-chrome", check_kiosk_chrome, False),
     ("postgres-db", check_database, True),
+    ("relay-backlog", check_relay_backlog, False),
 ]
 
 

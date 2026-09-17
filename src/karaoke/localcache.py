@@ -1711,20 +1711,54 @@ def log_event(
     except Exception:
         return
     try:
-        c.execute(
-            "INSERT INTO play_events (ts, mode, artist, title, event, source, has_synced)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (time.time(), mode, artist, title, event, source, int(has_synced)),
-        )
-        if event in ("play", "discover") and (artist or title):
+        from . import event_store
+
+        event_store.ensure_schema(c)
+        # One transaction: the play row, the denormalised counter and the
+        # unified event commit together, so the event log can never claim a
+        # play that the counter disagrees with. See docs/database.md.
+        with c.transaction():
             c.execute(
-                "UPDATE tracks SET play_count = play_count + 1"
-                " WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)",
-                (artist, title),
+                "INSERT INTO play_events (ts, mode, artist, title, event, source, has_synced)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (time.time(), mode, artist, title, event, source, int(has_synced)),
             )
-        c.commit()
+            track_id = None
+            if event in ("play", "discover") and (artist or title):
+                cur = c.execute(
+                    "UPDATE tracks SET play_count = play_count + 1"
+                    " WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)"
+                    " RETURNING track_id",
+                    (artist, title),
+                )
+                row = cur.fetchone()
+                if row:
+                    track_id = row["track_id"]
+
+            # The id comes free from the UPDATE above; without one the event is
+            # keyed by artist/title rather than dropped.
+            if track_id is not None:
+                agg_type, agg_id = event_store.AGG_TRACK, track_id
+            else:
+                agg_type = event_store.AGG_TRACK_KEY
+                agg_id = event_store.track_key(artist, title)
+
+            event_store.append(
+                c,
+                agg_type,
+                agg_id,
+                event_store.PLAY_EVENT_TYPES.get(event, event.upper()),
+                {
+                    "artist": artist,
+                    "title": title,
+                    "mode": mode,
+                    "source": source,
+                    "has_synced": bool(has_synced),
+                    "track_id": track_id,
+                },
+            )
     except Exception:
-        pass
+        log.debug("log_event failed", exc_info=True)
     finally:
         if own:
             try:
@@ -1953,24 +1987,49 @@ def record_queue_event(
     own = conn is None
     c = conn or connect()
     try:
+        from . import event_store
+
         ensure_queue_schema(c)
-        cur = c.execute(
-            """
-            INSERT INTO queue_events (ts, event_type, track_id, artist, title, queue_index, payload_json)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-            """,
-            (
-                time.time(),
-                event_type,
-                track_id,
-                artist or "",
-                title or "",
-                queue_index,
-                json.dumps(metadata or {}),
-            ),
-        )
-        ret_id = cur.fetchone()["id"]
-        c.commit()
+        event_store.ensure_schema(c)
+        # Legacy row and unified event land together or not at all.
+        with c.transaction():
+            cur = c.execute(
+                """
+                INSERT INTO queue_events (ts, event_type, track_id, artist, title, queue_index, payload_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (
+                    time.time(),
+                    event_type,
+                    track_id,
+                    artist or "",
+                    title or "",
+                    queue_index,
+                    json.dumps(metadata or {}),
+                ),
+            )
+            ret_id = cur.fetchone()["id"]
+
+            if track_id is not None:
+                agg_type, agg_id = event_store.AGG_TRACK, track_id
+            else:
+                agg_type = event_store.AGG_TRACK_KEY
+                agg_id = event_store.track_key(artist or "", title or "")
+
+            event_store.append(
+                c,
+                agg_type,
+                agg_id,
+                event_store.QUEUE_EVENT_TYPES.get(event_type, event_type.upper()),
+                {
+                    "artist": artist or "",
+                    "title": title or "",
+                    "track_id": track_id,
+                    "queue_index": queue_index,
+                    "queue_event_id": int(ret_id),
+                    "metadata": metadata or {},
+                },
+            )
         return int(ret_id)
     finally:
         if own:

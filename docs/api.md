@@ -337,6 +337,15 @@ This reference is generated from Python docstrings with `mkdocstrings`.
 
 ::: karaoke.cache_ingest
 
+
+## Event Store
+
+::: karaoke.event_store
+
+## Relay
+
+::: karaoke.relay
+
 ## `GET /api/workers/status`
 
 Celery worker, queue and Flower dashboard status. Allows monitoring the
