@@ -27,7 +27,7 @@ def test_run_default_selects_only_pending(mock_connect):
     backfill_runner.run()
 
     sql, params = execute.call_args[0]
-    assert "status IN (?)" in sql
+    assert "status IN (%s)" in sql
     assert params == ["pending"]
 
 
@@ -41,7 +41,7 @@ def test_run_retry_failed_includes_failed_gaps(mock_connect):
     backfill_runner.run(retry_failed=True, limit=5)
 
     sql, params = execute.call_args[0]
-    assert "status IN (?,?)" in sql
+    assert "status IN (%s,%s)" in sql
     assert params == ["pending", "failed", 5]
 
 

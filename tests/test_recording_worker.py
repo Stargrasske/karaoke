@@ -180,7 +180,7 @@ def _recording(conn, rid, *, age_days=0.0, keep=0, size=0, tmp_path=None):
         (directory / "seg-20260905-120000.flac").write_bytes(b"x" * size)
     conn.execute(
         "INSERT INTO recordings (recording_id, started_at, ended_at, source,"
-        " dir, status, keep_audio) VALUES (?, ?, ?, 'x', ?, 'analysed', ?)",
+        " dir, status, keep_audio) VALUES (%s, %s, %s, 'x', %s, 'analysed', %s)",
         (rid, _time.time() - age_days * 86400.0, _time.time(),
          str(directory), keep))
     conn.commit()
@@ -221,7 +221,7 @@ def test_markers_survive_pruning(store, tmp_path):
                   " title, ok) VALUES (1, 100.0, 'A', 'B', 1)")
     store.commit()
     rw.prune_recordings(conn=store)
-    left = store.execute("SELECT count(*) FROM recording_marks").fetchone()[0]
+    left = store.execute("SELECT count(*) as count FROM recording_marks").fetchone()["count"]
     assert left == 1
 
 

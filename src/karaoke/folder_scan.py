@@ -95,7 +95,7 @@ def scan_and_ingest_folder(
                             SELECT t.artist, t.title, t.album, t.duration
                             FROM tracks t
                             JOIN sources s ON s.track_id = t.track_id
-                            WHERE s.url LIKE ?
+                            WHERE s.url LIKE %s
                             LIMIT 1
                             """,
                             (f"%{vid}%",),
@@ -110,7 +110,7 @@ def scan_and_ingest_folder(
                 rec_dir = path.parent
                 with localcache.connect() as conn_check:
                     rec_row = conn_check.execute(
-                        "SELECT recording_id FROM recordings WHERE dir LIKE ? OR dir = ?",
+                        "SELECT recording_id FROM recordings WHERE dir LIKE %s OR dir = %s",
                         (f"%{rec_dir.name}%", str(rec_dir)),
                     ).fetchone()
                     if rec_row:

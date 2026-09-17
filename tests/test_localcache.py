@@ -5,12 +5,16 @@ from karaoke import localcache
 from karaoke.lyrics import Lyrics
 
 
-def _conn(tmp_path):
-    return localcache.connect(tmp_path / "karaoke.db")
+import pytest
+
+@pytest.fixture
+def c(tmp_path):
+    conn = localcache.connect(tmp_path / "karaoke.db")
+    yield conn
+    conn.close()
 
 
-def test_put_and_get_cached_lyrics_roundtrip(tmp_path):
-    c = _conn(tmp_path)
+def test_put_and_get_cached_lyrics_roundtrip(tmp_path, c):
     ly = Lyrics(
         plain="line one\nline two",
         synced_raw="[00:01.00] line one\n[00:05.00] line two",
@@ -26,8 +30,7 @@ def test_put_and_get_cached_lyrics_roundtrip(tmp_path):
     assert got.lines[0] == (1.0, "line one")
 
 
-def test_cache_key_is_case_insensitive(tmp_path):
-    c = _conn(tmp_path)
+def test_cache_key_is_case_insensitive(tmp_path, c):
     ly = Lyrics(plain="x", synced_raw="[00:01.00] x", source="lrclib",
                 lines=[(1.0, "x")])
     localcache.put_cached_lyrics("R.E.M.", "Losing My Religion", ly, conn=c)
@@ -35,19 +38,16 @@ def test_cache_key_is_case_insensitive(tmp_path):
     assert got is not None and got.has_synced
 
 
-def test_get_cached_lyrics_miss_returns_none(tmp_path):
-    c = _conn(tmp_path)
+def test_get_cached_lyrics_miss_returns_none(tmp_path, c):
     assert localcache.get_cached_lyrics("Nobody", "Nothing", conn=c) is None
 
 
-def test_put_empty_lyrics_is_noop(tmp_path):
-    c = _conn(tmp_path)
+def test_put_empty_lyrics_is_noop(tmp_path, c):
     localcache.put_cached_lyrics("A", "B", Lyrics(), conn=c)
     assert localcache.get_cached_lyrics("A", "B", conn=c) is None
 
 
-def test_put_is_upsert(tmp_path):
-    c = _conn(tmp_path)
+def test_put_is_upsert(tmp_path, c):
     localcache.put_cached_lyrics(
         "A", "B", Lyrics(plain="old", source="lrclib"), conn=c)
     localcache.put_cached_lyrics(
@@ -63,8 +63,7 @@ def test_put_is_upsert(tmp_path):
     assert got.has_synced
 
 
-def test_summarize_counts_plays_and_discoveries(tmp_path):
-    c = _conn(tmp_path)
+def test_summarize_counts_plays_and_discoveries(tmp_path, c):
     localcache.log_event("radio", "discover", artist="A", title="S1", conn=c)
     localcache.log_event("radio", "play", artist="A", title="S1",
                          source="lrclib", has_synced=True, conn=c)
@@ -89,8 +88,7 @@ def test_summarize_counts_plays_and_discoveries(tmp_path):
     assert dict(s.by_mode)["radio"] == 3
 
 
-def test_summarize_empty(tmp_path):
-    c = _conn(tmp_path)
+def test_summarize_empty(tmp_path, c):
     s = localcache.summarize(conn=c)
     assert s.total_events == 0
     assert s.plays == 0
@@ -98,8 +96,7 @@ def test_summarize_empty(tmp_path):
     assert s.top_tracks == []
 
 
-def test_add_track_source_does_not_create_empty_lyrics(tmp_path):
-    c = _conn(tmp_path)
+def test_add_track_source_does_not_create_empty_lyrics(tmp_path, c):
     track_id = localcache.add_track_source(
         "Mr. Bungle",
         "Violenza Domestica",
@@ -115,31 +112,29 @@ def test_add_track_source_does_not_create_empty_lyrics(tmp_path):
         "https://www.youtube.com/watch?v=bXWHf2HH8jY", c
     )
     assert found == (track_id, "Mr. Bungle", "Violenza Domestica")
-    assert c.execute("SELECT count(*) FROM lyrics").fetchone()[0] == 0
+    assert c.execute("SELECT count(*) FROM lyrics").fetchone()["count"] == 0
 
 
-def test_delete_empty_approved_lyrics_keeps_real_lyrics(tmp_path):
-    c = _conn(tmp_path)
+def test_delete_empty_approved_lyrics_keeps_real_lyrics(tmp_path, c):
     localcache.add_track_and_lyrics("Empty", "Placeholder", Lyrics(), conn=c)
     localcache.add_track_and_lyrics("Real", "Song", Lyrics(plain="words", source="manual"), conn=c)
     # Simulate legacy bad rows from the earlier cache indexer.
     empty_id = localcache.find_track_id("Empty", "Placeholder", c)
     assert empty_id is not None
     c.execute(
-        "INSERT INTO lyrics (track_id, kind, source, synced_lyrics, plain_lyrics) VALUES (?, 'approved', 'cache', '', '')",
+        "INSERT INTO lyrics (track_id, kind, source, synced_lyrics, plain_lyrics) VALUES (%s, 'approved', 'cache', '', '')",
         (empty_id,),
     )
     c.commit()
 
     assert localcache.delete_empty_approved_lyrics(conn=c) == 1
-    assert c.execute("SELECT count(*) FROM lyrics").fetchone()[0] == 1
+    assert c.execute("SELECT count(*) FROM lyrics").fetchone()["count"] == 1
     got = localcache.get_cached_lyrics("Real", "Song", conn=c)
     assert got is not None
     assert got.plain == "words"
 
 
-def test_log_event_ignores_blank_titles_in_top_lists(tmp_path):
-    c = _conn(tmp_path)
+def test_log_event_ignores_blank_titles_in_top_lists(tmp_path, c):
     localcache.log_event("query", "play", artist="", title="", conn=c)
     s = localcache.summarize(conn=c)
     assert s.plays == 1
@@ -147,10 +142,9 @@ def test_log_event_ignores_blank_titles_in_top_lists(tmp_path):
     assert s.top_tracks == []
 
 
-def test_add_track_with_url_updates_existing_track_no_duplicate(tmp_path):
+def test_add_track_with_url_updates_existing_track_no_duplicate(tmp_path, c):
     """A transcribe-style write whose URL shares a track's video ID must UPDATE,
     not create a duplicate track from divergent parsed artist/title."""
-    c = _conn(tmp_path)
     # Canonical track from LRCLIB, with a YouTube source.
     localcache.add_track_and_lyrics(
         "Ian Asher & Phantogram", "Black Out Days (Stay Away)",
@@ -171,7 +165,7 @@ def test_add_track_with_url_updates_existing_track_no_duplicate(tmp_path):
     )
 
     # Still exactly one track; its lyrics were updated in place.
-    assert c.execute("SELECT count(*) FROM tracks").fetchone()[0] == 1
+    assert c.execute("SELECT count(*) FROM tracks").fetchone()["count"] == 1
     got = localcache.get_lyrics_by_track_id(canonical_id, c)
     assert got is not None and got.source == "whisper"
 
@@ -203,8 +197,7 @@ def test_normalize_gap_metadata_keeps_real_titles_intact():
     )
 
 
-def test_log_lyric_gap_skips_unusable_metadata(tmp_path):
-    c = _conn(tmp_path)
+def test_log_lyric_gap_skips_unusable_metadata(tmp_path, c):
     localcache.log_lyric_gap("", "September | YouTube Music", c)
     localcache.log_lyric_gap("islandman - Topic", "Agit", c)
     rows = c.execute("SELECT artist, title FROM lyric_gaps").fetchall()

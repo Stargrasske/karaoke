@@ -112,7 +112,29 @@ def main() -> int:
 
         if not DRY_RUN and stats.get("processed"):
             write("VECTOR REBUILD BEGIN")
-            result = vector_index.rebuild_from_sqlite(embed=True, include_lines=True)
+            conn = localcache.connect()
+            try:
+                if missing:
+                    placeholders = ",".join("?" for _ in missing)
+                    rows = conn.execute(
+                        f"SELECT DISTINCT track_id FROM sources WHERE kind = 'local' AND url IN ({placeholders})",
+                        list(missing),
+                    ).fetchall()
+                    newly_ingested_ids = [r[0] for r in rows if r[0]]
+                else:
+                    newly_ingested_ids = []
+            finally:
+                conn.close()
+
+            if newly_ingested_ids:
+                write(f"Targeted vector indexing for {len(newly_ingested_ids)} tracks...")
+                result = vector_index.rebuild_from_sqlite(
+                    track_ids=newly_ingested_ids,
+                    embed=True,
+                    include_lines=True,
+                )
+            else:
+                result = vector_index.rebuild_from_sqlite(embed=True, include_lines=True)
             write(
                 f"VECTOR REBUILD COMPLETE indexed={result.indexed} "
                 f"line_docs={result.line_docs} note_docs={result.note_docs}"

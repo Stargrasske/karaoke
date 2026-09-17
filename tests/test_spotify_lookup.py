@@ -176,7 +176,7 @@ def test_rate_limit_is_not_recorded_as_a_miss(tmp_path, monkeypatch):
 
     c = real_connect(db)
     try:
-        assert c.execute("SELECT count(*) FROM spotify_lookups").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM spotify_lookups").fetchone()["count"] == 0
         assert localcache.spotify_lookup_due(1, c) is True   # still askable later
     finally:
         c.close()
@@ -240,7 +240,7 @@ def test_a_hit_stores_a_spotify_source(tmp_path, monkeypatch):
     c = real_connect(db)
     try:
         assert c.execute("SELECT count(*) FROM sources WHERE kind='spotify'"
-                         ).fetchone()[0] == 1
+                         ).fetchone()["count"] == 1
         assert localcache.spotify_lookup_due(1, c) is False
     finally:
         c.close()

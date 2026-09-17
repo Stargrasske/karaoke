@@ -32,7 +32,7 @@ def test_spotify_and_empty_urls_are_not(url):
 @pytest.fixture()
 def conn(tmp_path):
     c = localcache.connect(tmp_path / "t.db")
-    c.executescript("""
+    c.execute("""
         INSERT INTO tracks (track_id, artist, title) VALUES
             (1, 'A', 'Spotify Only'), (2, 'B', 'Has YouTube'),
             (3, 'C', 'Local File'), (4, 'D', 'No Sources');

@@ -94,8 +94,12 @@ nav:
   - Plans & Design:
       - Roadmap / TODO: todo.md
       - Vector search plan: vector-search-plan.md
+      - Browse mode enhancements plan: browse_mode_enhancements_plan.md
+      - Lyrics waterfall timed detection plan: lyrics_waterfall_timed_detection_plan.md
       - Chromecast dual playback plan: chromecast_dual_playback_and_two_part_experience_plan.md
       - Doc workflow plan: design/documentation-agent-workflow-plan.md
+      - Events & Postgres migration plan: events_and_postgres_plan.md
+      - Saved playlists Postgres migration plan: saved_playlists_postgres_migration_plan.md
       - TUI first concept: design/karaoke-tui-first-concept.md
   - Releases:
       - Version 0.8.0: releases/0.8.0.md

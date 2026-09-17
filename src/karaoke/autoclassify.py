@@ -35,7 +35,7 @@ def _has_cached_audio(track_id: int, conn) -> Optional[Path]:
     from .config import settings
 
     rows = conn.execute(
-        "SELECT url FROM sources WHERE track_id = ? AND url LIKE '%youtu%'",
+        "SELECT url FROM sources WHERE track_id = %s AND url LIKE '%%youtu%%'",
         (track_id,)).fetchall()
     directory = Path(settings.youtube_dir)
     if not directory.is_dir():
@@ -63,7 +63,7 @@ def missing(track_id: int, conn) -> set[str]:
     if localcache.tone_for(track_id, conn) is None:
         row = conn.execute(
             "SELECT plain_lyrics, source FROM lyrics"
-            " WHERE track_id = ? AND kind = 'approved'", (track_id,)).fetchone()
+            " WHERE track_id = %s AND kind = 'approved'", (track_id,)).fetchone()
         if row and len((row["plain_lyrics"] or "").strip()) >= tone_mod.MIN_CHARS:
             from .librarysearch import is_transcribed
 
@@ -86,7 +86,7 @@ def label_tone(track_id: int, conn) -> Optional[str]:
 
     row = conn.execute(
         "SELECT plain_lyrics, source FROM lyrics"
-        " WHERE track_id = ? AND kind = 'approved'", (track_id,)).fetchone()
+        " WHERE track_id = %s AND kind = 'approved'", (track_id,)).fetchone()
     if not row:
         return None
     verdict = tone_mod.classify_lyrics(row["plain_lyrics"] or "",
@@ -135,7 +135,7 @@ def _store_embedding(track_id: int, vector: list[float], conn) -> None:
         clap_vector.ensure_index(os_client)
         row = conn.execute(
             "SELECT artist, title, COALESCE(album, '') AS album"
-            "  FROM tracks WHERE track_id = ?", (track_id,)).fetchone()
+            "  FROM tracks WHERE track_id = %s", (track_id,)).fetchone()
         os_client.index(
             index=clap_vector.CLAP_INDEX, id=clap_vector.doc_id(track_id),
             body=clap_vector.build_doc(

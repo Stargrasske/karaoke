@@ -79,7 +79,7 @@ def test_falls_back_to_acoustic_genre_when_no_vectors(tmp_path, monkeypatch):
     db_path = tmp_path / "acoustic_fallback.db"
     conn = localcache.connect(db_path)
     try:
-        conn.executescript("""
+        conn.execute("""
             INSERT INTO tracks (track_id, artist, title) VALUES
                 (1, 'Seed Artist', 'Seed Track'),
                 (2, 'Peer Artist', 'Similar Sonic Track'),

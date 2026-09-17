@@ -120,10 +120,10 @@ def conn(tmp_path):
     rows = [("Real Band", "Song One", "lrclib", "disobey the law"),
             ("Neubauten", "Installation", "whisper", "disobey not the law")]
     for i, (artist, title, source, words) in enumerate(rows, start=1):
-        c.execute("INSERT INTO tracks (artist, title, duration) VALUES (?, ?, 200)",
+        c.execute("INSERT INTO tracks (artist, title, duration) VALUES (%s, %s, 200)",
                   (artist, title))
         c.execute("INSERT INTO lyrics (track_id, kind, source, plain_lyrics)"
-                  " VALUES (?, 'approved', ?, ?)", (i, source, words))
+                  " VALUES (%s, 'approved', %s, %s)", (i, source, words))
     c.commit()
     yield c
     c.close()

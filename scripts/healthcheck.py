@@ -13,7 +13,7 @@ Checks:
   - RabbitMQ mgmt    http://127.0.0.1:15672           (optional)
   - kind cluster     karaoke ns pods Running          (required)
   - Kiosk Chrome CDP http://localhost:9222/json       (optional)
-  - SQLite DB        openable + track count           (required)
+  - Postgres DB      openable + track count           (required)
 
 Env overrides: KARAOKE_API_PORT (8000), KARAOKE_CTRL_PORT (8765),
 RABBITMQ_HOST (localhost), KUBE_CONTEXT (kind-karaoke), K8S_NAMESPACE (karaoke).
@@ -101,13 +101,15 @@ def check_kiosk_chrome() -> tuple[str, str]:
         WARN, "kiosk Chrome CDP :9222 down (unified player off)")
 
 
-def check_sqlite() -> tuple[str, str]:
+def check_database() -> tuple[str, str]:
     try:
         sys.path.insert(0, "/home/tina/karaoke/src")
         from karaoke import localcache
         with localcache.connect() as conn:
-            n = conn.execute("SELECT count(*) FROM tracks").fetchone()[0]
-        return OK, f"{n} tracks"
+            # Rows come back as dicts (the pool sets row_factory=dict_row), so
+            # this must be keyed by name -- row[0] raises KeyError.
+            row = conn.execute("SELECT count(*) AS n FROM tracks").fetchone()
+        return OK, f"{row['n']} tracks"
     except Exception as exc:
         return FAIL, f"DB error: {exc}"
 
@@ -119,7 +121,7 @@ CHECKS = [
     ("rabbitmq-mgmt", check_mq_mgmt, False),
     ("kind-pods", check_kind_pods, True),
     ("kiosk-chrome", check_kiosk_chrome, False),
-    ("sqlite-db", check_sqlite, True),
+    ("postgres-db", check_database, True),
 ]
 
 

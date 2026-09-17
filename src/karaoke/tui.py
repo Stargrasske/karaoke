@@ -135,7 +135,7 @@ def genre_filter_options() -> list[tuple[str, str]]:
                 """
             )
             for row in cur.fetchall():
-                genre = str(row[0] or "").strip()
+                genre = str(list(row.values())[0] if hasattr(row, "values") else row[0] or "").strip()
                 key = genre.casefold()
                 if not genre or key in seen:
                     continue
@@ -1652,11 +1652,11 @@ class KaraokeTui(App):
         cur = conn.cursor()
         sort_mode = getattr(self, "_sort", "artist")
         if sort_mode == "most_played":
-            order_sql = "t.play_count DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "t.play_count DESC, lower(t.artist), lower(t.title)"
         elif sort_mode == "least_played":
-            order_sql = "t.play_count ASC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "t.play_count ASC, lower(t.artist), lower(t.title)"
         else:
-            order_sql = "t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "lower(t.artist), lower(t.title)"
 
         limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
         cur.execute(
@@ -1671,7 +1671,7 @@ class KaraokeTui(App):
               ON s.track_id = t.track_id AND s.kind = 'spotify'
             LEFT JOIN lyrics l
               ON t.track_id = l.track_id AND l.kind = 'approved'
-            GROUP BY t.track_id
+            
             ORDER BY {order_sql}
             {limit_sql}
             """,
@@ -1695,13 +1695,7 @@ class KaraokeTui(App):
             ensure_schema(conn)
         except Exception:
             pass
-        has_artist_genres = True
-        try:
-            c_ag = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artist_genres'")
-            if not c_ag.fetchone():
-                has_artist_genres = False
-        except Exception:
-            has_artist_genres = False
+        has_artist_genres = localcache.table_exists(conn, "artist_genres")
         artist_genres_map = localcache.get_all_artist_genres_map(conn) if has_artist_genres else {}
 
         where_clauses = []
@@ -1716,8 +1710,8 @@ class KaraokeTui(App):
                     """(
                         EXISTS (
                             SELECT 1 FROM artist_genres ag
-                            WHERE (lower(trim(ag.broad_genre)) = lower(trim(:genre_filter))
-                                   OR lower(trim(ag.genre)) = lower(trim(:genre_filter)))
+                            WHERE (lower(trim(ag.broad_genre)) = lower(trim(%(genre_filter)s))
+                                   OR lower(trim(ag.genre)) = lower(trim(%(genre_filter)s)))
                               AND ag.artist_normalized = lower(trim(t.artist))
                         )
                         OR (
@@ -1725,35 +1719,35 @@ class KaraokeTui(App):
                                 SELECT 1 FROM artist_genres ag
                                 WHERE ag.artist_normalized = lower(trim(t.artist))
                             )
-                            AND lower(trim(COALESCE(g.genre, ''))) = lower(trim(:genre_filter))
+                            AND lower(trim(COALESCE(g.genre, ''))) = lower(trim(%(genre_filter)s))
                         )
                     )"""
                 )
             else:
-                where_clauses.append("lower(trim(COALESCE(g.genre, ''))) = lower(trim(:genre_filter))")
+                where_clauses.append("lower(trim(COALESCE(g.genre, ''))) = lower(trim(%(genre_filter)s))")
         if only_working:
             where_clauses.append("(COALESCE(l.synced_lyrics, '') != '' OR COALESCE(l.plain_lyrics, '') != '')")
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
         sort_mode = getattr(self, "_sort", "artist")
         if sort_mode == "most_played":
-            order_sql = "t.play_count DESC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "t.play_count DESC, lower(t.artist), lower(t.title)"
         elif sort_mode == "least_played":
-            order_sql = "t.play_count ASC, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "t.play_count ASC, lower(t.artist), lower(t.title)"
         elif sort_mode == "energy_desc":
-            order_sql = "a.energy DESC NULLS LAST, a.bpm DESC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "a.energy DESC NULLS LAST, a.bpm DESC NULLS LAST, lower(t.artist), lower(t.title)"
         elif sort_mode == "energy_asc":
-            order_sql = "a.energy ASC NULLS LAST, a.bpm ASC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "a.energy ASC NULLS LAST, a.bpm ASC NULLS LAST, lower(t.artist), lower(t.title)"
         elif sort_mode == "bpm_desc":
-            order_sql = "a.bpm DESC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "a.bpm DESC NULLS LAST, lower(t.artist), lower(t.title)"
         elif sort_mode == "bpm_asc":
-            order_sql = "a.bpm ASC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "a.bpm ASC NULLS LAST, lower(t.artist), lower(t.title)"
         elif sort_mode == "key":
-            order_sql = "a.detected_key ASC NULLS LAST, t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "a.detected_key ASC NULLS LAST, lower(t.artist), lower(t.title)"
         else:
-            order_sql = "t.artist COLLATE NOCASE, t.title COLLATE NOCASE"
+            order_sql = "lower(t.artist), lower(t.title)"
 
-        limit_sql = "LIMIT :browse_limit" if limit is not None else ""
+        limit_sql = "LIMIT %(browse_limit)s" if limit is not None else ""
 
         # Prefer a browser-openable source (youtube/http) over spotify so Enter
         # opens in the browser. Deterministic per track (see browse.py).
@@ -1775,7 +1769,7 @@ class KaraokeTui(App):
                     CASE
                         WHEN s2.kind = 'youtube_music' THEN 0
                         WHEN s2.kind = 'youtube' THEN 1
-                        WHEN s2.url LIKE 'http%' THEN 2
+                        WHEN s2.url LIKE 'http%%' THEN 2
                         WHEN s2.kind = 'spotify' THEN 3
                         ELSE 4
                     END,
@@ -1789,7 +1783,7 @@ class KaraokeTui(App):
             LEFT JOIN track_genre g
               ON g.track_id = t.track_id
             {where_sql}
-            GROUP BY t.track_id
+            
             ORDER BY {order_sql}
             {limit_sql}
             """,
@@ -2208,19 +2202,13 @@ class KaraokeTui(App):
         if not rows:
             return rows
         ids = [r.get("track_id") for r in rows if r.get("track_id") is not None]
-        placeholders = ",".join("?" * len(ids)) if ids else ""
+        placeholders = ",".join(["%s"] * len(ids)) if ids else ""
         energies: dict = {}
         genres: dict = {}
         keys: dict = {}
         bpms: dict = {}
         plays: dict = {}
-        has_artist_genres = True
-        try:
-            c_ag = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artist_genres'")
-            if not c_ag.fetchone():
-                has_artist_genres = False
-        except Exception:
-            has_artist_genres = False
+        has_artist_genres = localcache.table_exists(conn, "artist_genres")
         artist_genres_map = localcache.get_all_artist_genres_map(conn) if has_artist_genres else {}
 
         if placeholders:
@@ -2364,16 +2352,10 @@ class KaraokeTui(App):
             ensure_schema(conn)
         except Exception:
             pass
-        has_artist_genres = True
-        try:
-            c_ag = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artist_genres'")
-            if not c_ag.fetchone():
-                has_artist_genres = False
-        except Exception:
-            has_artist_genres = False
+        has_artist_genres = localcache.table_exists(conn, "artist_genres")
 
         where_clauses = [
-            "(t.duration IS NULL OR t.duration <= :album_seconds)",
+            "(t.duration IS NULL OR t.duration <= %(album_seconds)s)",
             "(COALESCE(l.synced_lyrics, '') != '' OR COALESCE(l.plain_lyrics, '') != '')",
         ]
         params = {
@@ -2388,8 +2370,8 @@ class KaraokeTui(App):
                     """(
                         EXISTS (
                             SELECT 1 FROM artist_genres ag
-                            WHERE (lower(trim(ag.broad_genre)) = lower(trim(:genre_filter))
-                                   OR lower(trim(ag.genre)) = lower(trim(:genre_filter)))
+                            WHERE (lower(trim(ag.broad_genre)) = lower(trim(%(genre_filter)s))
+                                   OR lower(trim(ag.genre)) = lower(trim(%(genre_filter)s)))
                               AND ag.artist_normalized = lower(trim(t.artist))
                         )
                         OR (
@@ -2397,12 +2379,12 @@ class KaraokeTui(App):
                                 SELECT 1 FROM artist_genres ag
                                 WHERE ag.artist_normalized = lower(trim(t.artist))
                             )
-                            AND lower(trim(COALESCE(g.genre, ''))) = lower(trim(:genre_filter))
+                            AND lower(trim(COALESCE(g.genre, ''))) = lower(trim(%(genre_filter)s))
                         )
                     )"""
                 )
             else:
-                where_clauses.append("lower(trim(COALESCE(g.genre, ''))) = lower(trim(:genre_filter))")
+                where_clauses.append("lower(trim(COALESCE(g.genre, ''))) = lower(trim(%(genre_filter)s))")
 
         cur.execute(
             f"""
@@ -2420,7 +2402,7 @@ class KaraokeTui(App):
                     CASE
                         WHEN s2.kind = 'youtube_music' THEN 0
                         WHEN s2.kind = 'youtube' THEN 1
-                        WHEN s2.url LIKE 'http%' THEN 2
+                        WHEN s2.url LIKE 'http%%' THEN 2
                         WHEN s2.kind = 'spotify' THEN 3
                         ELSE 4
                     END,
@@ -2434,9 +2416,9 @@ class KaraokeTui(App):
             LEFT JOIN track_genre g
               ON g.track_id = t.track_id
             WHERE {' AND '.join(where_clauses)}
-            GROUP BY t.track_id
+            
             ORDER BY RANDOM()
-            LIMIT :wildcard_limit
+            LIMIT %(wildcard_limit)s
             """,
             params,
         )
@@ -2515,6 +2497,10 @@ class KaraokeTui(App):
         table.border_title = (f"queue  {self._queue_at + 1}/{len(self._queue)}"
                               f"{follow_label}"
                               f"  [sort: {self._sort}]")
+        
+        # Keep cursor on currently playing item, which scrolls it into view
+        if self._queue_at >= 0:
+            table.move_cursor(row=self._queue_at, animate=False)
 
     def action_toggle_play_once(self) -> None:
         """`o`: play the queue through once, or let the player carry on.
@@ -2613,6 +2599,13 @@ class KaraokeTui(App):
             log.exception("queue play failed")
             self.notify(f"Play failed: {exc}", severity="error")
             return False
+        if not getattr(self, "_ytmusic_queue_follow", False):
+            # Drop older played items, keep last 2 for history (so current is 3rd)
+            if index > 2:
+                drop_count = index - 2
+                self._queue = self._queue[drop_count:]
+                index = 2
+
         self._queue_at = index
         self._render_queue()
         localcache.save_active_queue(
@@ -3107,7 +3100,9 @@ class KaraokeTui(App):
         if not saved_pl:
             vid = localcache.extract_youtube_id(getattr(det, "url", "") or "")
             if vid:
-                saved_pl = localcache.find_playlist_by_video_id(vid, conn=conn)
+                matches = localcache.find_playlist_by_video_id(vid, conn=conn)
+                if matches:
+                    saved_pl = matches[0]
 
         if not saved_pl:
             # Check if this is an external/unsynced YouTube Music playlist playing
@@ -4556,7 +4551,7 @@ class KaraokeTui(App):
         """Stored track length in seconds, or None when unknown."""
         if track_id is None:
             return None
-        row = conn.execute("SELECT duration FROM tracks WHERE track_id = ?",
+        row = conn.execute("SELECT duration FROM tracks WHERE track_id = %s",
                            (track_id,)).fetchone()
         return float(row["duration"]) if row and row["duration"] else None
 
@@ -4574,7 +4569,7 @@ class KaraokeTui(App):
                     duration = self._load_duration(self._current_track_id, conn)
                     # 1. Consensus artist genres
                     art_row = conn.execute(
-                        "SELECT artist FROM tracks WHERE track_id = ?",
+                        "SELECT artist FROM tracks WHERE track_id = %s",
                         (self._current_track_id,),
                     ).fetchone()
                     if art_row and art_row["artist"]:
@@ -4797,7 +4792,7 @@ class KaraokeTui(App):
             log.debug("no fetchable audio to sync %s - %s against", artist, title)
             return
         row = conn.execute(
-            "SELECT url FROM sources WHERE track_id = ? AND url LIKE '%youtu%'"
+            "SELECT url FROM sources WHERE track_id = %s AND url LIKE '%%youtu%%'"
             " LIMIT 1", (track_id,)).fetchone()
         if enqueue_if_needed(artist, title, (row["url"] if row else "") or "", conn):
             log.info("queued %s - %s for lyric alignment", artist, title)

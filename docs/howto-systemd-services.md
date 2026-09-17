@@ -93,7 +93,7 @@ degraded platform); **optional** checks only warn.
 | rabbitmq-mgmt `:15672` | ⛔️ opt | Management UI. |
 | kind pods `Running` | ✅ | `karaoke` namespace. |
 | kiosk-chrome CDP `:9222` | ⛔️ opt | Unified player window. |
-| sqlite-db | ✅ | Opens the DB + counts tracks. |
+| postgres-db | ✅ | Opens the DB + counts tracks. |
 
 At boot the timer may fire before ports finish binding, so the check retries the
 whole sweep a few times (env-tunable: `KARAOKE_HEALTH_RETRIES`,
@@ -109,8 +109,14 @@ karaoke health: HEALTHY
   [✓] rabbitmq-mgmt  (opt)  http://127.0.0.1:15672
   [✓] kind-pods      (req)  2 pod(s) Running
   [✓] kiosk-chrome   (opt)  CDP :9222
-  [✓] sqlite-db      (req)  348 tracks
+  [✓] postgres-db    (req)  18244 tracks
 ```
+
+!!! warning "`postgres-db` was reporting `DB error: 0`"
+    The required DB probe used `fetchone()[0]`, which raises `KeyError: 0`
+    now that the pool returns dict rows — so the health check reported
+    `DEGRADED` on every run after the Postgres cutover. Fixed, and the check
+    renamed from `sqlite-db` to match the backend.
 
 ## Reloading & Code Updates
 

@@ -28,7 +28,7 @@ def conn(tmp_path):
     for artist, title in (("Portishead", "Glory Box"),
                           ("Portishead", "Sour Times"),
                           ("Sleep", "Dragonaut")):
-        c.execute("INSERT INTO tracks (artist, title) VALUES (?, ?)",
+        c.execute("INSERT INTO tracks (artist, title) VALUES (%s, %s)",
                   (artist, title))
     c.commit()
     yield c
@@ -120,7 +120,7 @@ def test_re_storing_keeps_the_art_and_fills_in_a_missing_url(conn):
     grid = _grid(8, 4)
     key = cover_store.store(grid, conn, source_url="")
     assert cover_store.store(grid, conn, source_url="https://a.example/x") == key
-    row = conn.execute("SELECT source_url FROM cover_art WHERE art_key = ?",
+    row = conn.execute("SELECT source_url FROM cover_art WHERE art_key = %s",
                        (key,)).fetchone()
     assert row["source_url"] == "https://a.example/x"
 
@@ -136,7 +136,7 @@ def test_the_tables_are_added_to_a_database_predating_them(tmp_path):
     try:
         cover_store.ensure_table(c)
         names = {r["name"] for r in
-                 c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                 c.execute("SELECT table_name as name FROM information_schema.tables WHERE table_schema='public'")}
         assert {"cover_art", "track_art"} <= names
     finally:
         c.close()

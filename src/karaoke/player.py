@@ -295,20 +295,25 @@ def get_synced(
                 pass
         return ly
 
-    # 1. Local SQLite cache first
+    cached = None
     if use_cache:
         with localcache.connect() as conn:
             track_id = localcache.find_track_id(artist, title, conn)
             if track_id:
                 cached = localcache.get_lyrics_by_track_id(track_id, conn)
-                if cached is not None and (cached.synced_raw or cached.plain):
+                if cached is not None and cached.has_synced:
                     _log("cache_hit", cached)
                     return cached
 
-    if use_cache:
+    if use_cache and not cached:
         _log("cache_miss")
 
     ly = fetch_lrclib(artist, title, album, duration)
+    
+    # If online didn't have synced lyrics, but we had cached plain lyrics,
+    # keep our cached plain lyrics rather than whatever online gave us.
+    if not ly.has_synced and cached is not None and cached.plain:
+        ly = cached
 
     # Whisper fallback
     if not ly.has_synced and transcribe and audio_path:

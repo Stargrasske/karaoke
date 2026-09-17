@@ -156,9 +156,9 @@ def test_search_dual_signal_artist_consensus_vs_title(tmp_path):
     db_path = tmp_path / "test_dual_signal.db"
     conn = localcache.connect(db_path)
     try:
-        conn.executescript("""
+        conn.execute("""
             INSERT INTO tracks (track_id, artist, title, album, duration) VALUES
-                (1, 'Django Reinhardt', "Django's blues", 'The Classic Sessions', 180),
+                (1, 'Django Reinhardt', 'Django''s blues', 'The Classic Sessions', 180),
                 (2, 'Django Reinhardt', 'Minor Swing', 'The Classic Sessions', 190),
                 (3, 'Muddy Waters', 'Mannish Boy', 'The Blues Anthology', 210),
                 (4, 'Unknown Busker', 'Corner Blues', 'The Street Tapes', 150);

@@ -308,7 +308,7 @@ def load_recording(recording_id: int, conn=None) -> Optional[dict]:
     own = conn is None
     c = conn or localcache.connect()
     try:
-        row = c.execute("SELECT * FROM recordings WHERE recording_id = ?",
+        row = c.execute("SELECT * FROM recordings WHERE recording_id = %s",
                         (recording_id,)).fetchone()
         return dict(row) if row else None
     finally:
@@ -336,7 +336,7 @@ def discard_audio(recording_id: int, *, conn=None) -> int:
     own = conn is None
     c = conn or localcache.connect()
     try:
-        c.execute("UPDATE recordings SET status = 'discarded' WHERE recording_id = ?"
+        c.execute("UPDATE recordings SET status = 'discarded' WHERE recording_id = %s"
                   " AND status != 'recording'", (recording_id,))
         c.commit()
     finally:
@@ -448,7 +448,7 @@ def analyse(recording_id: int, *, keep: Optional[bool] = None) -> list[str]:
             analysed += 1
 
     with localcache.connect() as c:
-        c.execute("UPDATE recordings SET status = 'analysed' WHERE recording_id = ?",
+        c.execute("UPDATE recordings SET status = 'analysed' WHERE recording_id = %s",
                   (recording_id,))
         c.commit()
 

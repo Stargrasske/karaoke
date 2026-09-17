@@ -332,6 +332,11 @@ This reference is generated from Python docstrings with `mkdocstrings`.
 
 ::: karaoke.stage_view
 
+
+## Cache Ingest
+
+::: karaoke.cache_ingest
+
 ## `GET /api/workers/status`
 
 Celery worker, queue and Flower dashboard status. Allows monitoring the

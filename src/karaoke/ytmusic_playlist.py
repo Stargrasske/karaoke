@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import argparse
 import re
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,14 +66,14 @@ class PlaylistResult:
     completed: bool = True
 
 
-def karaoke_tracks(conn: sqlite3.Connection) -> list[Candidate]:
+def karaoke_tracks(conn: Connection) -> list[Candidate]:
     """Return tracks that have approved synced lyrics, with any stored YouTube video ID."""
     rows = conn.execute(
         """
         SELECT t.artist, t.title,
                (SELECT s.url FROM sources s
                  WHERE s.track_id = t.track_id AND s.kind IN ('youtube', 'youtube_music', 'http')
-                   AND s.url LIKE '%youtu%'
+                   AND s.url LIKE '%%youtu%%'
                  ORDER BY CASE s.kind WHEN 'youtube_music' THEN 1 WHEN 'youtube' THEN 2 ELSE 3 END
                  LIMIT 1) AS yt_url
           FROM tracks t
@@ -81,8 +82,7 @@ def karaoke_tracks(conn: sqlite3.Connection) -> list[Candidate]:
            AND length(COALESCE(l.synced_lyrics, '')) > 0
            AND length(TRIM(COALESCE(t.artist, ''))) > 0
            AND length(TRIM(COALESCE(t.title, ''))) > 0
-         GROUP BY t.track_id
-         ORDER BY t.artist COLLATE NOCASE, t.title COLLATE NOCASE
+                  ORDER BY lower(t.artist), lower(t.title)
         """
     ).fetchall()
 
@@ -238,7 +238,7 @@ def create_temp_queue_playlist(
     client: Optional[YTMusicClient] = None,
     search_query: str = "",
     max_tracks: int = 50,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> PlaylistResult:
     """Create or overwrite today's private YouTube Music temp queue.
 
@@ -354,7 +354,7 @@ def create_temp_queue_playlist(
 
 def get_latest_temp_queue_playlist(
     client: Optional[YTMusicClient] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> Optional[dict[str, Any]]:
     """Fetch the newest temp queue playlist from YouTube Music and map its tracks.
 
@@ -429,7 +429,7 @@ def get_latest_temp_queue_playlist(
                 JOIN tracks t ON t.track_id = s.track_id
                 LEFT JOIN track_analysis a ON a.track_id = t.track_id
                 LEFT JOIN track_genre g ON g.track_id = t.track_id
-                WHERE s.url LIKE ?
+                WHERE s.url LIKE %s
                 LIMIT 1
                 """,
                 (f"%{vid}%",),
@@ -476,7 +476,7 @@ def export_synced_tracks_to_ytmusic(
     limit: Optional[int] = None,
     dry_run: bool = False,
     client: Optional[YTMusicClient] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> PlaylistResult:
     """Export all karaoke-ready tracks in SQLite to a YouTube Music playlist."""
     own_conn = conn is None
@@ -528,7 +528,7 @@ def reconcile_playlist_with_remote(
     playlist_id: str,
     local_rows: list[dict[str, Any]],
     client: Optional[YTMusicClient] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Compare local queue rows with remote YouTube Music playlist tracks and reconcile drift.
 
@@ -588,7 +588,7 @@ def reconcile_playlist_with_remote(
                 JOIN tracks t ON t.track_id = s.track_id
                 LEFT JOIN track_analysis a ON a.track_id = t.track_id
                 LEFT JOIN track_genre g ON g.track_id = t.track_id
-                WHERE s.url LIKE ?
+                WHERE s.url LIKE %s
                 LIMIT 1
                 """,
                 (f"%{vid}%",),
@@ -646,7 +646,7 @@ def reconcile_playlist_with_remote(
 def import_ytmusic_playlist_to_library(
     playlist_id: str,
     *,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
     resolve_lyrics: bool = True,
     client: Optional[YTMusicClient] = None,
 ) -> dict[str, Any]:

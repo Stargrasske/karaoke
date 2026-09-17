@@ -98,17 +98,22 @@ def test_ensure_schema_folds_away_existing_duplicates(tmp_path):
     staging.ensure_schema(conn)
     # Recreate the pre-fix state: table present, no uniqueness constraint.
     conn.execute("DROP INDEX IF EXISTS idx_staged_lyrics_unique")
+    try:
+        conn.execute("ALTER TABLE staged_lyrics DROP CONSTRAINT staged_lyrics_key_source_kind_key")
+    except Exception:
+        pass  # Ignore if constraint doesn't exist or we're on SQLite
+    conn.commit()
     now = 1.0
     for i in range(4):
         conn.execute(
             "INSERT INTO staged_lyrics (key, artist, title, source_kind, status,"
             " plain_lyrics, synced_lyrics, created_at, updated_at)"
-            " VALUES (?,?,?,?,'pending',?,?,?,?)",
+            " VALUES (%s,%s,%s,%s,'pending',%s,%s,%s,%s)",
             (localcache._key("A", "B"), "A", "B", "yt", "p", f"s{i}", now, now))
     conn.commit()
     # Counted with raw SQL: list_staged calls ensure_schema, which would fold
     # them away before we could observe the duplicated state.
-    assert conn.execute("SELECT count(*) FROM staged_lyrics").fetchone()[0] == 4
+    assert conn.execute("SELECT count(*) as count FROM staged_lyrics").fetchone()["count"] == 4
 
     staging.ensure_schema(conn)
     items = staging.list_staged(status="all", conn=conn)

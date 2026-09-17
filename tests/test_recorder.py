@@ -18,6 +18,16 @@ def db(tmp_path, monkeypatch):
     real = localcache.connect
     monkeypatch.setattr(localcache, "connect", lambda *a, **k: real(path))
     monkeypatch.setattr(recorder, "recordings_dir", lambda: tmp_path / "rec")
+    
+    # Pre-insert dummy recordings so foreign keys are satisfied
+    c = localcache.connect(path)
+    localcache.ensure_recording_tables(c)
+    c.execute("INSERT INTO recordings (recording_id, started_at, ended_at, status, source, dir) VALUES (1, 0, 0, 'finished', '', '')")
+    c.execute("INSERT INTO recordings (recording_id, started_at, ended_at, status, source, dir) VALUES (2, 0, 0, 'finished', '', '')")
+    c.execute("ALTER SEQUENCE recordings_recording_id_seq RESTART WITH 3")
+    c.commit()
+    c.close()
+    
     return path
 
 
@@ -96,7 +106,7 @@ def test_stop_closes_the_row_and_finalises_the_segment(db, monkeypatch):
     assert proc.terminated is True
     assert not recorder.is_running(session.recording_id)
     with localcache.connect() as c:
-        row = c.execute("SELECT status, ended_at FROM recordings WHERE recording_id=?",
+        row = c.execute("SELECT status, ended_at FROM recordings WHERE recording_id=%s",
                         (session.recording_id,)).fetchone()
     assert row["status"] == "complete" and row["ended_at"] is not None
 
@@ -365,7 +375,7 @@ def test_unanalysed_recordings_are_pointed_out(tmp_path, monkeypatch):
     db = tmp_path / "t.db"
     real = localcache.connect
     conn = real(db)
-    conn.executescript("""
+    conn.execute("""
         INSERT INTO recordings (recording_id, started_at, source, dir, status)
         VALUES (1, 1000.0, 'x', '/tmp/x', 'complete'),
                (2, 1000.0, 'x', '/tmp/x', 'analysed'),

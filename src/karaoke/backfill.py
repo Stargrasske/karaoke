@@ -28,7 +28,7 @@ def backfill_main(argv: Optional[list[str]] = None) -> int:
             cur = conn.execute(
                 """
                 SELECT artist, title, status, attempts, last_error FROM lyric_gaps
-                WHERE (? = 'all' OR status = ?)
+                WHERE (%s = 'all' OR status = %s)
                 ORDER BY status, gap_id
                 """,
                 (args.status, args.status),

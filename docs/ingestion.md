@@ -91,6 +91,14 @@ With WAL mode active, lock-skips are rare on the retry.
 Run the retry pass **after** the first pass finishes, so the two do not compete
 for the writer.
 
+### Running from Admin TUI
+
+The Admin TUI (`python -m karaoke.admin_tui`) exposes these operations directly in the **File Ingestion & Folder Scan** panel:
+
+- **`Retry Skipped (p)`** (`btn-retry-skipped`): Ingests skipped files for the specified or default collection folder, updating OpenSearch vectors on completion.
+- **`Dry Run Check (d)`** (`btn-retry-dryrun`): Rapidly previews how many on-disk files are missing from SQLite without modifying anything.
+- **`Index YT Cache (y)`** (`btn-index-cache`): Scans downloaded YouTube cache files (`~/.local/share/karaoke/youtube/`) and adds unindexed tracks to SQLite.
+
 ### Files that still won't ingest
 
 Some skipped files have empty ID3 tags and do not resolve via fingerprint; they

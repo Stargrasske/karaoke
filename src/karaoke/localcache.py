@@ -11,7 +11,8 @@ available SQLite database (``~/.local/share/karaoke/karaoke.db`` by default) tha
 from __future__ import annotations
 
 import re
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -22,9 +23,11 @@ from .config import settings
 from .logger import log
 from .lyrics import Lyrics, clean_artist, clean_page_title, parse_lrc
 
+_IS_PG = True
+
 _NEW_SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
-    track_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id    SERIAL PRIMARY KEY,
     artist      TEXT NOT NULL,
     title       TEXT NOT NULL,
     album       TEXT,
@@ -33,7 +36,7 @@ CREATE TABLE IF NOT EXISTS tracks (
 );
 
 CREATE TABLE IF NOT EXISTS sources (
-    source_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id   SERIAL PRIMARY KEY,
     track_id    INTEGER NOT NULL,
     kind        TEXT NOT NULL,
     url         TEXT UNIQUE,
@@ -42,7 +45,7 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 
 CREATE TABLE IF NOT EXISTS lyrics (
-    lyric_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    lyric_id        SERIAL PRIMARY KEY,
     track_id        INTEGER NOT NULL,
     kind            TEXT NOT NULL DEFAULT 'approved', -- approved | staged | rejected
     source          TEXT, -- lrclib | youtube_caption | whisper | user_submitted
@@ -52,7 +55,7 @@ CREATE TABLE IF NOT EXISTS lyrics (
 );
 
 CREATE TABLE IF NOT EXISTS lyric_gaps (
-    gap_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    gap_id          SERIAL PRIMARY KEY,
     artist          TEXT NOT NULL,
     title           TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'pending', -- pending | processed | failed
@@ -64,7 +67,7 @@ CREATE TABLE IF NOT EXISTS lyric_gaps (
 );
 
 CREATE TABLE IF NOT EXISTS recordings (
-    recording_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recording_id SERIAL PRIMARY KEY,
     started_at   REAL NOT NULL,
     ended_at     REAL,
     source       TEXT NOT NULL,
@@ -76,7 +79,7 @@ CREATE TABLE IF NOT EXISTS recordings (
 );
 
 CREATE TABLE IF NOT EXISTS recording_marks (
-    mark_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    mark_id      SERIAL PRIMARY KEY,
     recording_id INTEGER NOT NULL,
     at_wall      REAL NOT NULL,   -- when the identification landed
     at_mono      REAL,            -- monotonic pair, so clock drift is measurable
@@ -131,7 +134,7 @@ CREATE TABLE IF NOT EXISTS track_sync_offsets (
 -- -- which is what happened to four Wizards of Ooze tracks. Classifying is
 -- cheap; the classification is what belongs in a column.
 CREATE TABLE IF NOT EXISTS track_notes (
-    note_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id    SERIAL PRIMARY KEY,
     track_id   INTEGER NOT NULL,
     kind       TEXT NOT NULL,   -- biography | transcription | commentary | credits
     text       TEXT NOT NULL,
@@ -154,7 +157,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_track_notes_dedup
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS play_events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         SERIAL PRIMARY KEY,
     ts         REAL NOT NULL,
     mode       TEXT NOT NULL,          -- radio | spotify | listen | output | file | query | print
     artist     TEXT DEFAULT '',
@@ -171,17 +174,17 @@ CREATE INDEX IF NOT EXISTS idx_play_events_track ON play_events (artist, title);
 
 def _key(artist: str, title: str) -> str:
     """Stable case-insensitive artist/title cache key for staging metadata."""
-    return f"{artist.strip().casefold()}\0{title.strip().casefold()}"
+    return f"{artist.strip().casefold()}\u2400{title.strip().casefold()}"
 
 
-def ensure_gap_columns(conn: sqlite3.Connection) -> None:
+def ensure_gap_columns(conn: Connection) -> None:
     """Add the gap diagnostics columns to an existing DB (idempotent).
 
     ``attempts`` and ``last_error`` let the backfill runner distinguish a
     transient throttle from a real miss, and make ``failed`` rows retryable
     instead of terminal.
     """
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(lyric_gaps)")}
+    have = {r["name"] for r in conn.execute("SELECT column_name as name FROM information_schema.columns WHERE table_name = %s", ("lyric_gaps",))}
     if "attempts" not in have:
         conn.execute("ALTER TABLE lyric_gaps ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
     if "last_error" not in have:
@@ -189,14 +192,14 @@ def ensure_gap_columns(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def ensure_play_count_column(conn: sqlite3.Connection) -> None:
+def ensure_play_count_column(conn: Connection) -> None:
     """Add tracks.play_count and backfill it from play_events (idempotent).
 
     Play counts drive the "priority: least played" sort so undiscovered tracks
     surface first. The column is denormalised for cheap sorting; it is kept in
     step by record_event and seeded here from the historical play_events log.
     """
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(tracks)")}
+    have = {r["name"] for r in conn.execute("SELECT column_name as name FROM information_schema.columns WHERE table_name = %s", ("tracks",))}
     if not have:
         # No tracks table yet (a database predating it, or a minimal test
         # fixture). Nothing to migrate; the table's own CREATE carries the
@@ -248,7 +251,7 @@ def normalize_gap_metadata(artist: str, title: str) -> Optional[tuple[str, str]]
     return a, t
 
 
-def log_lyric_gap(artist: str, title: str, conn: sqlite3.Connection) -> None:
+def log_lyric_gap(artist: str, title: str, conn: Connection) -> None:
     """Log a song that is missing lyrics.
 
     Metadata is normalized first; unusable rows are dropped instead of queued.
@@ -258,7 +261,7 @@ def log_lyric_gap(artist: str, title: str, conn: sqlite3.Connection) -> None:
         log.debug("lyric gap skipped (unusable metadata): %r - %r", artist, title)
         return
     conn.execute(
-        "INSERT OR IGNORE INTO lyric_gaps (artist, title, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO lyric_gaps (artist, title, created_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
         (*cleaned, time.time())
     )
     conn.commit()
@@ -270,11 +273,11 @@ def log_lyric_gap(artist: str, title: str, conn: sqlite3.Connection) -> None:
 SPOTIFY_LOOKUP_ATTEMPTS = 2
 
 
-def ensure_recording_tables(conn: sqlite3.Connection) -> None:
+def ensure_recording_tables(conn: Connection) -> None:
     """Create the record-mode tables in databases predating them."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS recordings (
-            recording_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id SERIAL PRIMARY KEY,
             started_at   REAL NOT NULL,
             ended_at     REAL,
             source       TEXT NOT NULL,
@@ -284,7 +287,7 @@ def ensure_recording_tables(conn: sqlite3.Connection) -> None:
             note         TEXT
         );
         CREATE TABLE IF NOT EXISTS recording_marks (
-            mark_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            mark_id      SERIAL PRIMARY KEY,
             recording_id INTEGER NOT NULL,
             at_wall      REAL NOT NULL,
             at_mono      REAL,
@@ -305,11 +308,11 @@ def ensure_recording_tables(conn: sqlite3.Connection) -> None:
 NOTE_KINDS = ("biography", "transcription", "commentary", "credits")
 
 
-def ensure_notes_table(conn: sqlite3.Connection) -> None:
+def ensure_notes_table(conn: Connection) -> None:
     """Create the notes table in databases predating it."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS track_notes (
-            note_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id    SERIAL PRIMARY KEY,
             track_id   INTEGER NOT NULL,
             kind       TEXT NOT NULL,
             text       TEXT NOT NULL,
@@ -326,7 +329,7 @@ def ensure_notes_table(conn: sqlite3.Connection) -> None:
 
 
 def record_note(track_id: int, kind: str, text: str, source: str,
-                conn: sqlite3.Connection, *,
+                conn: Connection, *,
                 confidence: Optional[float] = None) -> bool:
     """Store text about a track that is not its lyrics.
 
@@ -347,7 +350,7 @@ def record_note(track_id: int, kind: str, text: str, source: str,
     conn.execute(
         """
         INSERT INTO track_notes (track_id, kind, text, source, confidence, noted_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT(track_id, kind, source) DO UPDATE SET
             text       = excluded.text,
             confidence = excluded.confidence,
@@ -360,19 +363,19 @@ def record_note(track_id: int, kind: str, text: str, source: str,
     return True
 
 
-def notes_for_track(track_id: int, conn: sqlite3.Connection) -> list:
+def notes_for_track(track_id: int, conn: Connection) -> list:
     """Every note held about one track, newest first."""
     return conn.execute(
         """
         SELECT note_id, track_id, kind, text, source, confidence, noted_at
-        FROM track_notes WHERE track_id = ?
+        FROM track_notes WHERE track_id = %s
         ORDER BY noted_at DESC, note_id DESC
         """,
         (track_id,),
     ).fetchall()
 
 
-def iter_note_rows(conn: sqlite3.Connection) -> Iterable[sqlite3.Row]:
+def iter_note_rows(conn: Connection) -> Iterable[dict]:
     """Yield every note with its track's names, for indexing."""
     cur = conn.cursor()
     cur.execute(
@@ -400,9 +403,9 @@ def iter_note_rows(conn: sqlite3.Connection) -> Iterable[sqlite3.Row]:
 GOOD_ANCHOR_FRACTION = 0.83
 
 
-def ensure_alignment_support_table(conn: sqlite3.Connection) -> None:
+def ensure_alignment_support_table(conn: Connection) -> None:
     """Create the alignment support table in databases predating it."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS alignment_support (
             track_id     INTEGER PRIMARY KEY,
             lines        INTEGER NOT NULL,
@@ -417,7 +420,7 @@ def ensure_alignment_support_table(conn: sqlite3.Connection) -> None:
 
 
 def record_alignment_support(track_id: int, report: dict,
-                             conn: sqlite3.Connection, *,
+                             conn: Connection, *,
                              source: str = "") -> None:
     """Note how well a stored alignment's timings are actually supported.
 
@@ -438,7 +441,7 @@ def record_alignment_support(track_id: int, report: dict,
         INSERT INTO alignment_support
             (track_id, lines, anchored, longest_gap_s, unanchored_fraction,
              source, noted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(track_id) DO UPDATE SET
             lines               = excluded.lines,
             anchored            = excluded.anchored,
@@ -476,14 +479,14 @@ def alignment_is_trustworthy(row: Any) -> Optional[bool]:
     return fraction >= GOOD_ANCHOR_FRACTION
 
 
-def alignment_support(track_id: int, conn: sqlite3.Connection) -> Any:
+def alignment_support(track_id: int, conn: Connection) -> Any:
     """The recorded support for one track's alignment, or None."""
     return conn.execute(
-        "SELECT * FROM alignment_support WHERE track_id = ?",
+        "SELECT * FROM alignment_support WHERE track_id = %s",
         (track_id,)).fetchone()
 
 
-def alignments_for_review(conn: sqlite3.Connection,
+def alignments_for_review(conn: Connection,
                           threshold: float = GOOD_ANCHOR_FRACTION) -> list:
     """Stored alignments whose timings are mostly interpolated, worst first.
 
@@ -496,15 +499,15 @@ def alignments_for_review(conn: sqlite3.Connection,
                CAST(s.anchored AS REAL) / s.lines AS fraction
         FROM alignment_support s
         JOIN tracks t ON t.track_id = s.track_id
-        WHERE s.lines > 0 AND CAST(s.anchored AS REAL) / s.lines < ?
+        WHERE s.lines > 0 AND CAST(s.anchored AS REAL) / s.lines < %s
         ORDER BY fraction
         """,
         (threshold,)).fetchall()
 
 
-def ensure_genre_table(conn: sqlite3.Connection) -> None:
+def ensure_genre_table(conn: Connection) -> None:
     """Create the genre table in databases predating it."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS track_genre (
             track_id        INTEGER PRIMARY KEY,
             genre           TEXT NOT NULL,
@@ -524,7 +527,7 @@ def ensure_genre_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def record_genre(track_id: int, verdict: Any, conn: sqlite3.Connection, *,
+def record_genre(track_id: int, verdict: Any, conn: Connection, *,
                  method: str = "clap-zero-shot") -> bool:
     """Store a track's genre label. Returns whether anything was written.
 
@@ -539,7 +542,7 @@ def record_genre(track_id: int, verdict: Any, conn: sqlite3.Connection, *,
         """
         INSERT INTO track_genre (track_id, genre, score, runner_up,
                                  runner_up_score, method, labelled_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(track_id) DO UPDATE SET
             genre           = excluded.genre,
             score           = excluded.score,
@@ -555,22 +558,22 @@ def record_genre(track_id: int, verdict: Any, conn: sqlite3.Connection, *,
     return True
 
 
-def clear_genre(track_id: int, conn: sqlite3.Connection) -> bool:
+def clear_genre(track_id: int, conn: Connection) -> bool:
     """Remove a track's genre label.
 
     Needed when a re-label decides the track matches nothing after all: leaving
     the old row would keep a stale answer that the current rules would refuse
     to make, which is worse than having none.
     """
-    removed = conn.execute("DELETE FROM track_genre WHERE track_id = ?",
+    removed = conn.execute("DELETE FROM track_genre WHERE track_id = %s",
                            (track_id,)).rowcount
     conn.commit()
     return bool(removed)
 
 
-def ensure_tone_table(conn: sqlite3.Connection) -> None:
+def ensure_tone_table(conn: Connection) -> None:
     """Create the lyric-tone table in databases predating it."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS track_tone (
             track_id        INTEGER PRIMARY KEY,
             tone            TEXT NOT NULL,
@@ -586,7 +589,7 @@ def ensure_tone_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def record_tone(track_id: int, verdict: Any, conn: sqlite3.Connection, *,
+def record_tone(track_id: int, verdict: Any, conn: Connection, *,
                 method: str = "embed-zero-shot") -> bool:
     """Store a lyric's tone. Separate from genre because the two axes come
     from different material and either can exist without the other: an
@@ -598,7 +601,7 @@ def record_tone(track_id: int, verdict: Any, conn: sqlite3.Connection, *,
         """
         INSERT INTO track_tone (track_id, tone, score, runner_up,
                                 runner_up_score, method, labelled_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(track_id) DO UPDATE SET
             tone            = excluded.tone,
             score           = excluded.score,
@@ -614,53 +617,53 @@ def record_tone(track_id: int, verdict: Any, conn: sqlite3.Connection, *,
     return True
 
 
-def clear_tone(track_id: int, conn: sqlite3.Connection) -> bool:
+def clear_tone(track_id: int, conn: Connection) -> bool:
     """Remove a track's tone, when a re-read decides it cannot be judged."""
-    removed = conn.execute("DELETE FROM track_tone WHERE track_id = ?",
+    removed = conn.execute("DELETE FROM track_tone WHERE track_id = %s",
                            (track_id,)).rowcount
     conn.commit()
     return bool(removed)
 
 
-def tone_for(track_id: int, conn: sqlite3.Connection) -> Any:
+def tone_for(track_id: int, conn: Connection) -> Any:
     """One track's stored tone row, or None."""
     return conn.execute(
-        "SELECT * FROM track_tone WHERE track_id = ?", (track_id,)).fetchone()
+        "SELECT * FROM track_tone WHERE track_id = %s", (track_id,)).fetchone()
 
 
-def tone_counts(conn: sqlite3.Connection) -> list:
+def tone_counts(conn: Connection) -> list:
     """How many tracks carry each tone, commonest first."""
     return conn.execute(
         "SELECT tone, count(*) AS n, avg(score) AS mean_score"
         "  FROM track_tone GROUP BY tone ORDER BY n DESC").fetchall()
 
 
-def genre_for(track_id: int, conn: sqlite3.Connection) -> Any:
+def genre_for(track_id: int, conn: Connection) -> Any:
     """One track's stored genre row, or None."""
     return conn.execute(
-        "SELECT * FROM track_genre WHERE track_id = ?", (track_id,)).fetchone()
+        "SELECT * FROM track_genre WHERE track_id = %s", (track_id,)).fetchone()
 
 
-def genre_counts(conn: sqlite3.Connection) -> list:
+def genre_counts(conn: Connection) -> list:
     """How many tracks carry each label, commonest first."""
     return conn.execute(
         "SELECT genre, count(*) AS n, avg(score) AS mean_score"
         "  FROM track_genre GROUP BY genre ORDER BY n DESC").fetchall()
 
 
-def tracks_in_genre(genre: str, conn: sqlite3.Connection,
+def tracks_in_genre(genre: str, conn: Connection,
                     limit: int = 50) -> list:
     """Tracks carrying a label, most confident first."""
     return conn.execute(
         "SELECT g.track_id, t.artist, t.title, g.score, g.runner_up"
         "  FROM track_genre g JOIN tracks t ON t.track_id = g.track_id"
-        " WHERE g.genre = ? ORDER BY g.score DESC LIMIT ?",
+        " WHERE g.genre = %s ORDER BY g.score DESC LIMIT %s",
         (genre, limit)).fetchall()
 
 
-def ensure_artist_genres_table(conn: sqlite3.Connection) -> None:
+def ensure_artist_genres_table(conn: Connection) -> None:
     """Create the artist genres consensus table in databases predating it."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS artist_genres (
             artist_normalized TEXT NOT NULL,
             genre             TEXT NOT NULL,
@@ -676,7 +679,7 @@ def ensure_artist_genres_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def get_artist_genres(artist: str, conn: sqlite3.Connection) -> tuple[list[str], list[str]]:
+def get_artist_genres(artist: str, conn: Connection) -> tuple[list[str], list[str]]:
     """Retrieve specific genres and canonical broad genres for an artist.
 
     Returns:
@@ -689,7 +692,7 @@ def get_artist_genres(artist: str, conn: sqlite3.Connection) -> tuple[list[str],
     rows = conn.execute(
         """
         SELECT genre, broad_genre FROM artist_genres
-        WHERE artist_normalized = ?
+        WHERE artist_normalized = %s
         ORDER BY weight DESC
         """,
         (norm,),
@@ -697,8 +700,8 @@ def get_artist_genres(artist: str, conn: sqlite3.Connection) -> tuple[list[str],
     specific: list[str] = []
     broad: set[str] = set()
     for r in rows:
-        g = str(r[0]).strip()
-        bg = str(r[1]).strip()
+        g = str(r["genre"]).strip() if r["genre"] else ""
+        bg = str(r["broad_genre"]).strip() if r["broad_genre"] else ""
         if g and g not in specific:
             specific.append(g)
         if bg:
@@ -706,7 +709,7 @@ def get_artist_genres(artist: str, conn: sqlite3.Connection) -> tuple[list[str],
     return (specific, sorted(broad))
 
 
-def get_all_artist_genres_map(conn: sqlite3.Connection) -> dict[str, dict[str, list[str]]]:
+def get_all_artist_genres_map(conn: Connection) -> dict[str, dict[str, list[str]]]:
     """Pre-fetch all artist genre mappings for fast memory lookup in TUI / indexing.
 
     Returns:
@@ -718,9 +721,9 @@ def get_all_artist_genres_map(conn: sqlite3.Connection) -> dict[str, dict[str, l
     ).fetchall()
     result: dict[str, dict[str, Any]] = {}
     for r in rows:
-        an = str(r[0])
-        g = str(r[1])
-        bg = str(r[2])
+        an = str(r["artist_normalized"]) if r["artist_normalized"] else ""
+        g = str(r["genre"]) if r["genre"] else ""
+        bg = str(r["broad_genre"]) if r["broad_genre"] else ""
         if an not in result:
             result[an] = {"specific": [], "broad": set()}
         if g and g not in result[an]["specific"]:
@@ -734,9 +737,9 @@ def get_all_artist_genres_map(conn: sqlite3.Connection) -> dict[str, dict[str, l
     }
 
 
-def ensure_silence_table(conn: sqlite3.Connection) -> None:
+def ensure_silence_table(conn: Connection) -> None:
     """Create the recording silence map in databases predating it."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS recording_silence (
             recording_id INTEGER NOT NULL,
             file         TEXT NOT NULL,
@@ -764,7 +767,7 @@ def ensure_silence_table(conn: sqlite3.Connection) -> None:
 
 def record_silence(recording_id: int, file: str,
                    spans: list[tuple[float, float]],
-                   conn: sqlite3.Connection, *,
+                   conn: Connection, *,
                    duration_s: Optional[float] = None) -> int:
     """Store the silent stretches found in one segment file.
 
@@ -777,19 +780,21 @@ def record_silence(recording_id: int, file: str,
     them after the week's retention has deleted the files.
     """
     conn.execute(
-        "DELETE FROM recording_silence WHERE recording_id = ? AND file = ?",
+        "DELETE FROM recording_silence WHERE recording_id = %s AND file = %s",
         (recording_id, file),
     )
-    conn.executemany(
+    cur = conn.cursor()
+    cur.executemany(
         "INSERT INTO recording_silence (recording_id, file, start_s, end_s) "
-        "VALUES (?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s)",
         [(recording_id, file, s, e) for s, e in spans],
     )
+    cur.close()
     conn.execute(
         """
         INSERT INTO recording_silence_scans
             (recording_id, file, duration_s, scanned_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT(recording_id, file) DO UPDATE SET
             duration_s = excluded.duration_s,
             scanned_at = excluded.scanned_at
@@ -801,19 +806,19 @@ def record_silence(recording_id: int, file: str,
 
 
 def silence_for_recording(recording_id: int,
-                          conn: sqlite3.Connection) -> list:
+                          conn: Connection) -> list:
     """The stored silence map for a recording, in file and time order."""
     return conn.execute(
         """
         SELECT file, start_s, end_s FROM recording_silence
-        WHERE recording_id = ?
+        WHERE recording_id = %s
         ORDER BY file, start_s
         """,
         (recording_id,),
     ).fetchall()
 
 
-def silence_scans(recording_id: int, conn: sqlite3.Connection) -> dict:
+def silence_scans(recording_id: int, conn: Connection) -> dict:
     """Which files have been scanned, mapped to their measured duration.
 
     A fully audible segment stores no silence rows, so the rows alone cannot
@@ -821,10 +826,10 @@ def silence_scans(recording_id: int, conn: sqlite3.Connection) -> dict:
     """
     return {r["file"]: r["duration_s"] for r in conn.execute(
         "SELECT file, duration_s FROM recording_silence_scans "
-        "WHERE recording_id = ?", (recording_id,))}
+        "WHERE recording_id = %s", (recording_id,))}
 
 
-def ensure_restricted_table(conn: sqlite3.Connection) -> None:
+def ensure_restricted_table(conn: Connection) -> None:
     """Create the age-restricted list in databases predating it."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS restricted_tracks (
@@ -838,7 +843,7 @@ def ensure_restricted_table(conn: sqlite3.Connection) -> None:
 
 
 def record_restricted(track_id: int, query: str, reason: str,
-                      conn: sqlite3.Connection) -> None:
+                      conn: Connection) -> None:
     """Note that a track could not be fetched without being signed in.
 
     Age-restricted uploads need a logged-in session, which a headless fetch
@@ -849,7 +854,7 @@ def record_restricted(track_id: int, query: str, reason: str,
     conn.execute(
         """
         INSERT INTO restricted_tracks (track_id, query, reason, noted_at)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT(track_id) DO UPDATE SET
             query = excluded.query,
             reason = excluded.reason,
@@ -860,7 +865,7 @@ def record_restricted(track_id: int, query: str, reason: str,
     conn.commit()
 
 
-def restricted_tracks(conn: sqlite3.Connection) -> list:
+def restricted_tracks(conn: Connection) -> list:
     """Tracks waiting on a signed-in session, with their names."""
     return conn.execute(
         """
@@ -873,7 +878,7 @@ def restricted_tracks(conn: sqlite3.Connection) -> list:
     ).fetchall()
 
 
-def ensure_spotify_lookup_table(conn: sqlite3.Connection) -> None:
+def ensure_spotify_lookup_table(conn: Connection) -> None:
     """Create the Spotify lookup cache in databases predating it."""
     conn.execute("""
         CREATE TABLE IF NOT EXISTS spotify_lookups (
@@ -886,7 +891,7 @@ def ensure_spotify_lookup_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def spotify_lookup_due(track_id: Optional[int], conn: sqlite3.Connection, *,
+def spotify_lookup_due(track_id: Optional[int], conn: Connection, *,
                        max_attempts: int = SPOTIFY_LOOKUP_ATTEMPTS) -> bool:
     """Whether this track may be looked up on Spotify.
 
@@ -897,7 +902,7 @@ def spotify_lookup_due(track_id: Optional[int], conn: sqlite3.Connection, *,
     if track_id is None:
         return False
     row = conn.execute(
-        "SELECT uri, attempts FROM spotify_lookups WHERE track_id = ?",
+        "SELECT uri, attempts FROM spotify_lookups WHERE track_id = %s",
         (track_id,),
     ).fetchone()
     if row is None:
@@ -908,7 +913,7 @@ def spotify_lookup_due(track_id: Optional[int], conn: sqlite3.Connection, *,
 
 
 def record_spotify_lookup(track_id: int, uri: Optional[str],
-                          conn: sqlite3.Connection) -> None:
+                          conn: Connection) -> None:
     """Record the outcome of a Spotify lookup, hit or miss.
 
     Call this for a miss too. Never call it for a rate-limit error: a 429 says
@@ -918,7 +923,7 @@ def record_spotify_lookup(track_id: int, uri: Optional[str],
     conn.execute(
         """
         INSERT INTO spotify_lookups (track_id, uri, checked_at, attempts)
-        VALUES (?, ?, ?, 1)
+        VALUES (%s, %s, %s, 1)
         ON CONFLICT(track_id) DO UPDATE SET
             uri = excluded.uri,
             checked_at = excluded.checked_at,
@@ -962,16 +967,16 @@ def offset_mode(mode: str) -> str:
     return "radio" if mode == "radio" else "player"
 
 
-def ensure_sync_offset_columns(conn: sqlite3.Connection) -> None:
+def ensure_sync_offset_columns(conn: Connection) -> None:
     """Add the ``mode`` column to databases created before it existed."""
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(track_sync_offsets)")}
+    cols = {r["name"] for r in conn.execute("SELECT column_name as name FROM information_schema.columns WHERE table_name = %s", ("track_sync_offsets",))}
     if "mode" not in cols:
         conn.execute("ALTER TABLE track_sync_offsets ADD COLUMN "
                      "mode TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
-def get_sync_offset(track_id: Optional[int], conn: sqlite3.Connection,
+def get_sync_offset(track_id: Optional[int], conn: Connection,
                     mode: Optional[str] = None) -> Optional[float]:
     """Return the saved lyric sync offset (seconds) for a track, or None.
 
@@ -984,7 +989,7 @@ def get_sync_offset(track_id: Optional[int], conn: sqlite3.Connection,
     if track_id is None:
         return None
     row = conn.execute(
-        "SELECT offset_s, mode FROM track_sync_offsets WHERE track_id = ?",
+        "SELECT offset_s, mode FROM track_sync_offsets WHERE track_id = %s",
         (track_id,),
     ).fetchone()
     if row is None:
@@ -995,13 +1000,13 @@ def get_sync_offset(track_id: Optional[int], conn: sqlite3.Connection,
     return float(row["offset_s"])
 
 
-def set_sync_offset(track_id: int, offset_s: float, conn: sqlite3.Connection,
+def set_sync_offset(track_id: int, offset_s: float, conn: Connection,
                     mode: str = "") -> None:
     """Persist (upsert) the per-track lyric sync offset in seconds."""
     conn.execute(
         """
         INSERT INTO track_sync_offsets (track_id, offset_s, updated_at, mode)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT(track_id) DO UPDATE SET
             offset_s = excluded.offset_s,
             updated_at = excluded.updated_at,
@@ -1013,7 +1018,7 @@ def set_sync_offset(track_id: int, offset_s: float, conn: sqlite3.Connection,
     conn.commit()
 
 
-def _tune_connection(conn: sqlite3.Connection) -> None:
+def _tune_connection(conn: Connection) -> None:
     """Apply performance PRAGMAs. Best-effort: never fail opening the DB.
 
     WAL is the important one for a large collection being scanned while the
@@ -1029,11 +1034,11 @@ def _tune_connection(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA temp_store = MEMORY")
         conn.execute("PRAGMA cache_size = -16000")  # ~16 MB page cache
-    except sqlite3.Error as exc:
+    except psycopg.Error as exc:
         log.debug("sqlite tuning skipped: %s", exc)
 
 
-def ensure_performance_indexes(conn: sqlite3.Connection) -> None:
+def ensure_performance_indexes(conn: Connection) -> None:
     """Index the foreign-key/join columns the library and search hit constantly.
 
     ``sources.track_id`` and ``lyrics.track_id`` back the JOINs behind every
@@ -1041,7 +1046,7 @@ def ensure_performance_indexes(conn: sqlite3.Connection) -> None:
     a table that grows with the whole collection. Idempotent and cheap.
     """
     try:
-        conn.executescript(
+        conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_sources_track ON sources (track_id);
             CREATE INDEX IF NOT EXISTS idx_sources_kind ON sources (kind);
@@ -1052,14 +1057,14 @@ def ensure_performance_indexes(conn: sqlite3.Connection) -> None:
             """
         )
         conn.commit()
-    except sqlite3.Error as exc:
+    except psycopg.Error as exc:
         log.debug("sqlite index creation skipped: %s", exc)
 
 
-def ensure_queue_schema(conn: sqlite3.Connection) -> None:
+def ensure_queue_schema(conn: Connection) -> None:
     """Ensure tables exist for active queue state and playback queue events."""
     try:
-        conn.executescript(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS active_queue_state (
                 id            INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1071,7 +1076,7 @@ def ensure_queue_schema(conn: sqlite3.Connection) -> None:
             );
 
             CREATE TABLE IF NOT EXISTS queue_events (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                id           SERIAL PRIMARY KEY,
                 ts           REAL NOT NULL,
                 event_type   TEXT NOT NULL,
                 track_id     INTEGER,
@@ -1085,20 +1090,20 @@ def ensure_queue_schema(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
         ensure_saved_searches_and_playlists_schema(conn)
-    except sqlite3.Error as exc:
+    except psycopg.Error as exc:
         log.debug("queue schema setup skipped: %s", exc)
 
 
-def ensure_saved_searches_and_playlists_schema(conn: sqlite3.Connection) -> None:
+def ensure_saved_searches_and_playlists_schema(conn: Connection) -> None:
     """Ensure tables exist for saved searches and synced playlists."""
     try:
-        conn.executescript(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS saved_searches (
-                query        TEXT PRIMARY KEY COLLATE NOCASE,
+                query        TEXT PRIMARY KEY,
                 result_count INTEGER DEFAULT 0,
-                created_at   REAL NOT NULL,
-                last_used_at REAL NOT NULL,
+                created_at   DOUBLE PRECISION NOT NULL,
+                last_used_at DOUBLE PRECISION NOT NULL,
                 use_count    INTEGER DEFAULT 1
             );
             CREATE INDEX IF NOT EXISTS idx_saved_searches_last_used ON saved_searches(last_used_at);
@@ -1110,8 +1115,8 @@ def ensure_saved_searches_and_playlists_schema(conn: sqlite3.Connection) -> None
                 track_count  INTEGER DEFAULT 0,
                 url          TEXT DEFAULT '',
                 source_kind  TEXT DEFAULT 'youtube_music',
-                created_at   REAL NOT NULL,
-                updated_at   REAL NOT NULL
+                created_at   DOUBLE PRECISION NOT NULL,
+                updated_at   DOUBLE PRECISION NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_saved_playlists_updated ON saved_playlists(updated_at);
 
@@ -1130,17 +1135,17 @@ def ensure_saved_searches_and_playlists_schema(conn: sqlite3.Connection) -> None
             """
         )
         conn.commit()
-    except sqlite3.Error as exc:
+    except psycopg.Error as exc:
         log.debug("saved searches and playlists schema setup skipped: %s", exc)
 
 
-def ensure_radio_session_schema(conn: sqlite3.Connection) -> None:
+def ensure_radio_session_schema(conn: Connection) -> None:
     """Ensure tables exist for radio sessions and detected session tracks."""
     try:
-        conn.executescript(
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS radio_sessions (
-                session_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id    SERIAL PRIMARY KEY,
                 started_at    REAL NOT NULL,
                 ended_at      REAL,
                 source        TEXT NOT NULL DEFAULT 'mic',
@@ -1155,7 +1160,7 @@ def ensure_radio_session_schema(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_radio_sessions_status ON radio_sessions(status);
 
             CREATE TABLE IF NOT EXISTS radio_session_tracks (
-                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                id                 SERIAL PRIMARY KEY,
                 session_id         INTEGER NOT NULL,
                 artist             TEXT NOT NULL,
                 title              TEXT NOT NULL,
@@ -1175,58 +1180,92 @@ def ensure_radio_session_schema(conn: sqlite3.Connection) -> None:
             """
         )
         conn.commit()
-    except sqlite3.Error as exc:
+    except psycopg.Error as exc:
         log.debug("radio session schema setup skipped: %s", exc)
 
 
-def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Open (and lazily initialize) the local SQLite database."""
-    if db_path is None and settings.uses_postgres:
-        # Fail loudly rather than pretend: the Postgres backend is selected but
-        # not yet wired. Silently falling back to SQLite would split the
-        # library across two stores. See docs/database.md for the roadmap.
-        raise NotImplementedError(
-            "KARAOKE_DB_BACKEND=postgres is not implemented yet; the Postgres "
-            "backend is a planned phase (see docs/database.md). Unset "
-            "KARAOKE_DB_BACKEND (or set it to 'sqlite') to use the default "
-            "SQLite backend."
-        )
-    path = Path(db_path or settings.local_db)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    # The overnight importer and the Web TUI legitimately overlap. Wait for
-    # the writer instead of raising immediately and crashing the TUI screen.
-    conn.execute("PRAGMA busy_timeout = 30000")
-    # WAL lets readers (library browse, search) run concurrently with the
-    # importer's writes instead of blocking on a single global lock, and
-    # synchronous=NORMAL is the safe, much faster pairing for WAL. This is the
-    # single biggest win for large collections on the SQLite backend.
-    _tune_connection(conn)
-    conn.executescript(_NEW_SCHEMA)
-    conn.executescript(_SCHEMA)
-    ensure_gap_columns(conn)
-    ensure_play_count_column(conn)
-    ensure_sync_offset_columns(conn)
-    ensure_spotify_lookup_table(conn)
-    ensure_restricted_table(conn)
-    ensure_recording_tables(conn)
-    ensure_notes_table(conn)
-    ensure_silence_table(conn)
-    ensure_genre_table(conn)
-    ensure_artist_genres_table(conn)
-    ensure_tone_table(conn)
-    ensure_alignment_support_table(conn)
-    ensure_performance_indexes(conn)
-    ensure_queue_schema(conn)
-    ensure_saved_searches_and_playlists_schema(conn)
-    ensure_radio_session_schema(conn)
-    from .cover_store import ensure_table as _ensure_cover_art
-    _ensure_cover_art(conn)
+import atexit
+import os
+from psycopg_pool import ConnectionPool
+import psycopg.rows
+
+_POOL = None
+def get_pool() -> ConnectionPool:
+    global _POOL
+    if _POOL is None:
+        pg_url = os.environ.get("KARAOKE_PG_URL", "postgresql://karaoke:karaoke@localhost:5432/karaoke")
+        _POOL = ConnectionPool(conninfo=pg_url, open=True, min_size=1, max_size=500, kwargs={"autocommit": True, "row_factory": psycopg.rows.dict_row})
+        # Close the pool while the interpreter is still alive. Left to
+        # finalization, ConnectionPool.__del__ tries to join its worker threads
+        # after shutdown has begun and raises PythonFinalizationError -- which
+        # printed a traceback under every CLI and health-check run, reading
+        # like a crash directly beneath a successful report.
+        atexit.register(close_pool)
+    return _POOL
+
+
+def close_pool() -> None:
+    """Close the connection pool if one was opened (idempotent)."""
+    global _POOL
+    pool, _POOL = _POOL, None
+    if pool is not None:
+        try:
+            pool.close()
+        except Exception:
+            pass
+
+def connect(db_path: Optional[Path] = None) -> Connection:
+    pool = get_pool()
+    conn = pool.getconn()
+    
+    class AutoCloseConnection(conn.__class__):
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            super().__exit__(exc_type, exc_val, exc_tb)
+            self.close()
+
+    conn.__class__ = AutoCloseConnection
+
+    _closed = False
+    def pool_close():
+        nonlocal _closed
+        if _closed:
+            return
+        _closed = True
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        pool.putconn(conn)
+        
+    conn.close = pool_close
     return conn
 
+def _tune_connection(conn: Connection):
+    pass
 
-def find_track_id(artist: str, title: str, conn: sqlite3.Connection) -> Optional[int]:
+
+def table_exists(conn: Connection, table_name: str) -> bool:
+    """Check if a table exists in either PostgreSQL or SQLite."""
+    try:
+        cur = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = %s",
+            (table_name,),
+        )
+        return bool(cur.fetchone())
+    except Exception:
+        pass
+
+    try:
+        cur = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+            (table_name,),
+        )
+        return bool(cur.fetchone())
+    except Exception:
+        return False
+
+
+def find_track_id(artist: str, title: str, conn: Connection) -> Optional[int]:
     """Find a track by artist and title, returning its ID.
 
     Player metadata can vary in case, so cache lookup is case-insensitive while
@@ -1236,7 +1275,7 @@ def find_track_id(artist: str, title: str, conn: sqlite3.Connection) -> Optional
     cur.execute(
         """
         SELECT track_id FROM tracks
-        WHERE lower(artist) = lower(?) AND lower(title) = lower(?)
+        WHERE lower(artist) = lower(%s) AND lower(title) = lower(%s)
         ORDER BY track_id DESC
         LIMIT 1
         """,
@@ -1285,7 +1324,7 @@ def _title_keys(title: str) -> set[str]:
 
 
 def find_track_id_relaxed(artist: str, title: str,
-                          conn: sqlite3.Connection) -> Optional[int]:
+                          conn: Connection) -> Optional[int]:
     """Find a track when the exact spelling does not match.
 
     Sources name the same song differently: songrec stores the full credit
@@ -1320,7 +1359,7 @@ def find_track_id_relaxed(artist: str, title: str,
     words = re.sub(r"[^a-z0-9]+", " ", (cleaned or title).casefold()).split()
     lead = max(words, key=len) if words else ""
     rows = conn.execute(
-        "SELECT track_id, artist, title FROM tracks WHERE lower(title) LIKE ?"
+        "SELECT track_id, artist, title FROM tracks WHERE lower(title) LIKE %s"
         " ORDER BY track_id DESC LIMIT 200",
         (f"%{lead}%" if lead else "%",),
     ).fetchall()
@@ -1373,7 +1412,7 @@ def extract_playlist_id(url: Optional[str]) -> Optional[str]:
     return None
 
 
-def find_track_by_url(url: str, conn: sqlite3.Connection) -> Optional[tuple[int, str, str]]:
+def find_track_by_url(url: str, conn: Connection) -> Optional[tuple[int, str, str]]:
     """Find a track by source URL, returning (track_id, artist, title)."""
     cur = conn.cursor()
     # Try exact match first
@@ -1381,7 +1420,7 @@ def find_track_by_url(url: str, conn: sqlite3.Connection) -> Optional[tuple[int,
         """
         SELECT t.track_id, t.artist, t.title
         FROM tracks t JOIN sources s ON t.track_id = s.track_id
-        WHERE s.url = ?
+        WHERE s.url = %s
         """,
         (url,)
     )
@@ -1396,7 +1435,7 @@ def find_track_by_url(url: str, conn: sqlite3.Connection) -> Optional[tuple[int,
             """
             SELECT t.track_id, t.artist, t.title
             FROM tracks t JOIN sources s ON t.track_id = s.track_id
-            WHERE s.url LIKE ? AND s.kind IN ('youtube', 'youtube_music')
+            WHERE s.url LIKE %s AND s.kind IN ('youtube', 'youtube_music')
             LIMIT 1
             """,
             (f"%{vid}%",)
@@ -1408,11 +1447,11 @@ def find_track_by_url(url: str, conn: sqlite3.Connection) -> Optional[tuple[int,
     return None
 
 
-def get_lyrics_by_track_id(track_id: int, conn: sqlite3.Connection) -> Optional[Lyrics]:
+def get_lyrics_by_track_id(track_id: int, conn: Connection) -> Optional[Lyrics]:
     """Get approved lyrics for a given track ID."""
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM lyrics WHERE track_id = ? AND kind = 'approved'",
+        "SELECT * FROM lyrics WHERE track_id = %s AND kind = 'approved'",
         (track_id,)
     )
     row = cur.fetchone()
@@ -1435,7 +1474,7 @@ def get_cached_lyrics(
     artist: str,
     title: str,
     *,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> Optional[Lyrics]:
     """Return approved cached lyrics for artist/title, or None on miss.
 
@@ -1461,7 +1500,7 @@ def put_cached_lyrics(
     *,
     album: str = "",
     duration: Optional[float] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Upsert approved lyrics for artist/title.
 
@@ -1477,31 +1516,31 @@ def put_cached_lyrics(
         track_id = find_track_id(artist, title, c)
         if track_id is None:
             cur.execute(
-                "INSERT INTO tracks (artist, title, album, duration) VALUES (?, ?, ?, ?)",
+                "INSERT INTO tracks (artist, title, album, duration) VALUES (%s, %s, %s, %s) RETURNING track_id",
                 (artist, title, album, duration),
             )
-            track_id = cur.lastrowid
+            track_id = cur.fetchone()["track_id"]
             if track_id is None:
                 return
         else:
             cur.execute(
                 """
                 UPDATE tracks
-                SET album = COALESCE(NULLIF(?, ''), album),
-                    duration = COALESCE(?, duration)
-                WHERE track_id = ?
+                SET album = COALESCE(NULLIF(%s, ''), album),
+                    duration = COALESCE(%s, duration)
+                WHERE track_id = %s
                 """,
                 (album, duration, track_id),
             )
 
         cur.execute(
-            "DELETE FROM lyrics WHERE track_id = ? AND kind = 'approved'",
+            "DELETE FROM lyrics WHERE track_id = %s AND kind = 'approved'",
             (track_id,),
         )
         cur.execute(
             """
             INSERT INTO lyrics (track_id, kind, source, synced_lyrics, plain_lyrics)
-            VALUES (?, 'approved', ?, ?, ?)
+            VALUES (%s, 'approved', %s, %s, %s)
             """,
             (track_id, lyrics.source, lyrics.synced_raw, lyrics.plain),
         )
@@ -1511,7 +1550,7 @@ def put_cached_lyrics(
             c.close()
 
 
-def delete_empty_approved_lyrics(conn: Optional[sqlite3.Connection] = None) -> int:
+def delete_empty_approved_lyrics(conn: Optional[Connection] = None) -> int:
     """Delete placeholder approved lyrics rows that contain no synced or plain text."""
     own = conn is None
     c = conn or connect()
@@ -1542,7 +1581,7 @@ def add_track_source(
     url: Optional[str] = None,
     kind: str = "youtube",
     player_name: str = "",
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> int:
     """Upsert a track and optional source URL without creating lyrics rows."""
     own = conn is None
@@ -1562,19 +1601,19 @@ def add_track_source(
             track_id = find_track_id(artist, title, c)
         if track_id is None:
             cur.execute(
-                "INSERT INTO tracks (artist, title, album, duration) VALUES (?, ?, ?, ?)",
+                "INSERT INTO tracks (artist, title, album, duration) VALUES (%s, %s, %s, %s) RETURNING track_id",
                 (artist, title, album, duration),
             )
-            track_id = cur.lastrowid
+            track_id = cur.fetchone()["track_id"]
             if track_id is None:
                 raise RuntimeError("failed to insert track")
         else:
             cur.execute(
                 """
                 UPDATE tracks
-                SET album = COALESCE(NULLIF(?, ''), album),
-                    duration = COALESCE(?, duration)
-                WHERE track_id = ?
+                SET album = COALESCE(NULLIF(%s, ''), album),
+                    duration = COALESCE(%s, duration)
+                WHERE track_id = %s
                 """,
                 (album, duration, track_id),
             )
@@ -1583,7 +1622,7 @@ def add_track_source(
             cur.execute(
                 """
                 INSERT INTO sources (track_id, url, kind, player_name)
-                VALUES (?, ?, ?, NULLIF(?, ''))
+                VALUES (%s, %s, %s, NULLIF(%s, ''))
                 ON CONFLICT(url) DO UPDATE SET
                     track_id = excluded.track_id,
                     kind = excluded.kind,
@@ -1606,11 +1645,11 @@ def add_track_and_lyrics(
     duration: Optional[float] = None,
     url: Optional[str] = None,
     kind: str = "youtube",
-    conn: Optional[sqlite3.Connection] = None,
-) -> None:
+    conn: Optional[Connection] = None,
+) -> int:
     """Add or update a track, its optional source URL and approved lyrics."""
     if not (lyrics.synced_raw or lyrics.plain):
-        add_track_source(
+        return add_track_source(
             artist,
             title,
             album=album,
@@ -1619,7 +1658,6 @@ def add_track_and_lyrics(
             kind=kind,
             conn=conn,
         )
-        return
 
     own = conn is None
     c = conn or connect()
@@ -1635,17 +1673,18 @@ def add_track_and_lyrics(
         )
         cur = c.cursor()
         cur.execute(
-            "DELETE FROM lyrics WHERE track_id = ? AND kind = 'approved'",
+            "DELETE FROM lyrics WHERE track_id = %s AND kind = 'approved'",
             (track_id,),
         )
         cur.execute(
             """
             INSERT INTO lyrics (track_id, kind, source, synced_lyrics, plain_lyrics)
-            VALUES (?, 'approved', ?, ?, ?)
+            VALUES (%s, 'approved', %s, %s, %s)
             """,
             (track_id, lyrics.source, lyrics.synced_raw, lyrics.plain),
         )
         c.commit()
+        return int(track_id)
     finally:
         if own:
             c.close()
@@ -1663,7 +1702,7 @@ def log_event(
     title: str = "",
     source: str = "",
     has_synced: bool = False,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Record one play/discovery event (best-effort; never raises to caller)."""
     own = conn is None
@@ -1674,13 +1713,13 @@ def log_event(
     try:
         c.execute(
             "INSERT INTO play_events (ts, mode, artist, title, event, source, has_synced)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (time.time(), mode, artist, title, event, source, int(has_synced)),
         )
         if event in ("play", "discover") and (artist or title):
             c.execute(
                 "UPDATE tracks SET play_count = play_count + 1"
-                " WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)",
+                " WHERE LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)",
                 (artist, title),
             )
         c.commit()
@@ -1718,17 +1757,17 @@ class StatsSummary:
 
 def summarize(
     *, limit: int = 10, since: Optional[float] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> StatsSummary:
     """Compute a StatsSummary over play_events (optionally since a UNIX time)."""
     own = conn is None
     c = conn or connect()
-    where = "WHERE ts >= ?" if since is not None else ""
+    where = "WHERE ts >= %s" if since is not None else ""
     args: tuple = (since,) if since is not None else ()
     try:
         def scalar(sql: str, extra: tuple = ()) -> int:
             row = c.execute(sql, args + extra).fetchone()
-            return int(row[0]) if row and row[0] is not None else 0
+            return int(list(row.values())[0]) if row and list(row.values())[0] is not None else 0
 
         total = scalar(f"SELECT COUNT(*) FROM play_events {where}")
         plays = scalar(
@@ -1763,7 +1802,7 @@ def summarize(
             (r["artist"], r["title"], int(r["n"]))
             for r in c.execute(
                 f"SELECT artist, title, COUNT(*) AS n FROM play_events {play_where} "
-                "GROUP BY artist, title ORDER BY n DESC, title ASC LIMIT ?",
+                "GROUP BY artist, title ORDER BY n DESC, title ASC LIMIT %s",
                 args + (limit,),
             ).fetchall()
         ]
@@ -1771,7 +1810,7 @@ def summarize(
             (r["artist"], int(r["n"]))
             for r in c.execute(
                 f"SELECT artist, COUNT(*) AS n FROM play_events {play_where} "
-                "AND artist != '' GROUP BY artist ORDER BY n DESC, artist ASC LIMIT ?",
+                "AND artist != '' GROUP BY artist ORDER BY n DESC, artist ASC LIMIT %s",
                 args + (limit,),
             ).fetchall()
         ]
@@ -1801,7 +1840,7 @@ def save_active_queue(
     name: str,
     rows: list[dict[str, Any]],
     current_index: int = 0,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Persist the currently loaded queue to SQLite for instant restoration on reload."""
     import json
@@ -1827,7 +1866,7 @@ def save_active_queue(
         c.execute(
             """
             INSERT INTO active_queue_state (id, playlist_id, name, current_index, updated_at, items_json)
-            VALUES (1, ?, ?, ?, ?, ?)
+            VALUES (1, %s, %s, %s, %s, %s)
             ON CONFLICT(id) DO UPDATE SET
                 playlist_id = excluded.playlist_id,
                 name = excluded.name,
@@ -1843,7 +1882,7 @@ def save_active_queue(
             c.close()
 
 
-def load_active_queue(conn: Optional[sqlite3.Connection] = None) -> Optional[dict[str, Any]]:
+def load_active_queue(conn: Optional[Connection] = None) -> Optional[dict[str, Any]]:
     """Load the persisted active queue from SQLite, or None if none saved."""
     import json
     own = conn is None
@@ -1871,7 +1910,7 @@ def load_active_queue(conn: Optional[sqlite3.Connection] = None) -> Optional[dic
             c.close()
 
 
-def get_last_played_track(conn: Optional[sqlite3.Connection] = None) -> Optional[dict[str, Any]]:
+def get_last_played_track(conn: Optional[Connection] = None) -> Optional[dict[str, Any]]:
     """Return the most recently played track from play_events, or None."""
     own = conn is None
     c = conn or connect()
@@ -1906,7 +1945,7 @@ def record_queue_event(
     title: str = "",
     queue_index: int = 0,
     metadata: Optional[dict[str, Any]] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> int:
     """Record a queue navigation/playback event for audit and rollback."""
     import json
@@ -1918,7 +1957,7 @@ def record_queue_event(
         cur = c.execute(
             """
             INSERT INTO queue_events (ts, event_type, track_id, artist, title, queue_index, payload_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
             """,
             (
                 time.time(),
@@ -1930,8 +1969,9 @@ def record_queue_event(
                 json.dumps(metadata or {}),
             ),
         )
+        ret_id = cur.fetchone()["id"]
         c.commit()
-        return int(cur.lastrowid or 0)
+        return int(ret_id)
     finally:
         if own:
             c.close()
@@ -1939,7 +1979,7 @@ def record_queue_event(
 
 def get_recent_queue_events(
     limit: int = 20,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[dict[str, Any]]:
     """Return recent queue events in reverse chronological order."""
     import json
@@ -1952,7 +1992,7 @@ def get_recent_queue_events(
             SELECT id, ts, event_type, track_id, artist, title, queue_index, payload_json
             FROM queue_events
             ORDER BY id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -1981,10 +2021,10 @@ def get_recent_queue_events(
 def record_search_query(
     query: str,
     result_count: int = 0,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
-    """Record or update a search query in SQLite."""
-    q = (query or "").strip()
+    """Record or update a search query in SQLite/Postgres."""
+    q = (query or "").strip().lower()
     if not q or q == "*":
         return
     now = time.time()
@@ -1995,7 +2035,7 @@ def record_search_query(
         c.execute(
             """
             INSERT INTO saved_searches (query, result_count, created_at, last_used_at, use_count)
-            VALUES (?, ?, ?, ?, 1)
+            VALUES (%s, %s, %s, %s, 1)
             ON CONFLICT(query) DO UPDATE SET
                 query = excluded.query,
                 result_count = excluded.result_count,
@@ -2012,7 +2052,7 @@ def record_search_query(
 
 def get_saved_searches(
     limit: int = 50,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[dict[str, Any]]:
     """Return recently used saved search queries."""
     own = conn is None
@@ -2024,7 +2064,7 @@ def get_saved_searches(
             SELECT query, result_count, created_at, last_used_at, use_count
             FROM saved_searches
             ORDER BY last_used_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -2050,7 +2090,7 @@ def save_playlist(
     tracks: Optional[list[dict[str, Any]]] = None,
     url: str = "",
     source_kind: str = "youtube_music",
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Save or update a synced playlist and its tracks in SQLite."""
     pid = (playlist_id or "").strip()
@@ -2065,7 +2105,7 @@ def save_playlist(
         c.execute(
             """
             INSERT INTO saved_playlists (playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(playlist_id) DO UPDATE SET
                 name = excluded.name,
                 search_query = CASE WHEN excluded.search_query != '' THEN excluded.search_query ELSE saved_playlists.search_query END,
@@ -2077,12 +2117,12 @@ def save_playlist(
             (pid, name, search_query or "", track_count, url or "", source_kind, now, now),
         )
         if tracks is not None:
-            c.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = ?", (pid,))
+            c.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = %s", (pid,))
             for pos, t in enumerate(tracks, 1):
                 c.execute(
                     """
                     INSERT INTO saved_playlist_tracks (playlist_id, position, track_id, artist, title, video_id, url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         pid,
@@ -2102,7 +2142,7 @@ def save_playlist(
 
 def get_saved_playlists(
     limit: int = 50,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[dict[str, Any]]:
     """Return saved playlists ordered by update time."""
     own = conn is None
@@ -2114,7 +2154,7 @@ def get_saved_playlists(
             SELECT playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at
             FROM saved_playlists
             ORDER BY updated_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -2138,7 +2178,7 @@ def get_saved_playlists(
 
 def get_saved_playlist_tracks(
     playlist_id: str,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[dict[str, Any]]:
     """Return tracks for a saved playlist ordered by position."""
     own = conn is None
@@ -2149,7 +2189,7 @@ def get_saved_playlist_tracks(
             """
             SELECT position, track_id, artist, title, video_id, url
             FROM saved_playlist_tracks
-            WHERE playlist_id = ?
+            WHERE playlist_id = %s
             ORDER BY position ASC
             """,
             (playlist_id,),
@@ -2172,7 +2212,7 @@ def get_saved_playlist_tracks(
 
 def find_saved_playlist_by_id(
     playlist_id: str,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> Optional[dict[str, Any]]:
     """Retrieve a saved playlist by its playlist ID, or None if not found."""
     if not playlist_id:
@@ -2185,7 +2225,7 @@ def find_saved_playlist_by_id(
             """
             SELECT playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at
             FROM saved_playlists
-            WHERE playlist_id = ?
+            WHERE playlist_id = %s
             """,
             (playlist_id,),
         ).fetchone()
@@ -2208,7 +2248,7 @@ def find_saved_playlist_by_id(
 
 def find_playlist_by_video_id(
     video_id: str,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[dict[str, Any]]:
     """Find saved playlists containing a given YouTube video ID."""
     if not video_id:
@@ -2223,7 +2263,7 @@ def find_playlist_by_video_id(
                    p.created_at, p.updated_at, pt.position
             FROM saved_playlists p
             JOIN saved_playlist_tracks pt ON pt.playlist_id = p.playlist_id
-            WHERE pt.video_id = ?
+            WHERE pt.video_id = %s
             ORDER BY p.updated_at DESC
             """,
             (video_id,),
@@ -2250,7 +2290,7 @@ def find_playlist_by_video_id(
 def append_playlist_track(
     playlist_id: str,
     track: dict[str, Any],
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> int:
     """Append a track to a saved playlist, incrementing track_count and returning new position."""
     if not playlist_id:
@@ -2260,7 +2300,7 @@ def append_playlist_track(
     try:
         ensure_saved_searches_and_playlists_schema(c)
         row = c.execute(
-            "SELECT COALESCE(MAX(position), 0) AS max_pos FROM saved_playlist_tracks WHERE playlist_id = ?",
+            "SELECT COALESCE(MAX(position), 0) AS max_pos FROM saved_playlist_tracks WHERE playlist_id = %s",
             (playlist_id,),
         ).fetchone()
         new_pos = int(row["max_pos"] or 0) + 1
@@ -2268,7 +2308,7 @@ def append_playlist_track(
         c.execute(
             """
             INSERT INTO saved_playlist_tracks (playlist_id, position, track_id, artist, title, video_id, url)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 playlist_id,
@@ -2283,8 +2323,8 @@ def append_playlist_track(
         c.execute(
             """
             UPDATE saved_playlists
-            SET track_count = track_count + 1, updated_at = ?
-            WHERE playlist_id = ?
+            SET track_count = track_count + 1, updated_at = %s
+            WHERE playlist_id = %s
             """,
             (now, playlist_id),
         )
@@ -2297,7 +2337,7 @@ def append_playlist_track(
 
 def delete_saved_playlist(
     playlist_id: str,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Delete a saved playlist and its tracks from SQLite."""
     if not playlist_id:
@@ -2306,8 +2346,8 @@ def delete_saved_playlist(
     c = conn or connect()
     try:
         ensure_saved_searches_and_playlists_schema(c)
-        c.execute("DELETE FROM saved_playlists WHERE playlist_id = ?", (playlist_id,))
-        c.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+        c.execute("DELETE FROM saved_playlists WHERE playlist_id = %s", (playlist_id,))
+        c.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = %s", (playlist_id,))
         c.commit()
     finally:
         if own:
@@ -2319,7 +2359,7 @@ def start_radio_session(
     recording_id: Optional[int] = None,
     is_recording: bool = False,
     notes: Optional[str] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> int:
     """Create and start a new radio listening session in SQLite."""
     own = conn is None
@@ -2330,12 +2370,13 @@ def start_radio_session(
         cur = c.execute(
             """
             INSERT INTO radio_sessions (started_at, source, is_recording, recording_id, status, notes)
-            VALUES (?, ?, ?, ?, 'active', ?)
+            VALUES (%s, %s, %s, %s, 'active', %s) RETURNING session_id
             """,
             (started, source, 1 if is_recording else 0, recording_id, notes),
         )
+        ret_id = cur.fetchone()["session_id"]
         c.commit()
-        return int(cur.lastrowid)
+        return int(ret_id)
     finally:
         if own:
             c.close()
@@ -2349,7 +2390,7 @@ def record_radio_track(
     offset_s: Optional[float] = None,
     has_synced: bool = False,
     lyric_source: str = "",
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> int:
     """Record an identified track discovery/event in a radio session."""
     if not artist and not title:
@@ -2362,7 +2403,7 @@ def record_radio_track(
         row = c.execute(
             """
             SELECT id, play_count FROM radio_session_tracks
-            WHERE session_id = ? AND LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+            WHERE session_id = %s AND LOWER(artist) = LOWER(%s) AND LOWER(title) = LOWER(%s)
             """,
             (session_id, artist, title),
         ).fetchone()
@@ -2371,11 +2412,11 @@ def record_radio_track(
             c.execute(
                 """
                 UPDATE radio_session_tracks
-                SET last_seen_at = ?, play_count = play_count + 1,
-                    offset_s = COALESCE(?, offset_s),
-                    has_synced_lyrics = MAX(has_synced_lyrics, ?),
-                    lyric_source = CASE WHEN lyric_source != '' THEN lyric_source ELSE ? END
-                WHERE id = ?
+                SET last_seen_at = %s, play_count = play_count + 1,
+                    offset_s = COALESCE(%s, offset_s),
+                    has_synced_lyrics = GREATEST(has_synced_lyrics, %s),
+                    lyric_source = CASE WHEN lyric_source != '' THEN lyric_source ELSE %s END
+                WHERE id = %s
                 """,
                 (now, offset_s, 1 if has_synced else 0, lyric_source, track_entry_id),
             )
@@ -2385,13 +2426,13 @@ def record_radio_track(
                 INSERT INTO radio_session_tracks
                     (session_id, artist, title, first_seen_at, last_seen_at, play_count,
                      offset_s, has_synced_lyrics, lyric_source)
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, 1, %s, %s, %s) RETURNING id
                 """,
                 (session_id, artist, title, now, now, offset_s, 1 if has_synced else 0, lyric_source),
             )
-            track_entry_id = int(cur.lastrowid)
+            track_entry_id = int(cur.fetchone()["id"])
             c.execute(
-                "UPDATE radio_sessions SET track_count = track_count + 1 WHERE session_id = ?",
+                "UPDATE radio_sessions SET track_count = track_count + 1 WHERE session_id = %s",
                 (session_id,),
             )
         c.commit()
@@ -2405,7 +2446,7 @@ def update_radio_session_recording(
     session_id: int,
     recording_id: Optional[int],
     is_recording: bool = True,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Update active recording linkage for a radio session."""
     own = conn is None
@@ -2415,8 +2456,8 @@ def update_radio_session_recording(
         c.execute(
             """
             UPDATE radio_sessions
-            SET is_recording = ?, recording_id = COALESCE(?, recording_id)
-            WHERE session_id = ?
+            SET is_recording = %s, recording_id = COALESCE(%s, recording_id)
+            WHERE session_id = %s
             """,
             (1 if is_recording else 0, recording_id, session_id),
         )
@@ -2430,7 +2471,7 @@ def finish_radio_session(
     session_id: int,
     status: str = "completed",
     notes: Optional[str] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Mark a radio session as ended/completed."""
     own = conn is None
@@ -2439,7 +2480,7 @@ def finish_radio_session(
         ensure_radio_session_schema(c)
         ended = time.time()
         cur = c.execute(
-            "SELECT COUNT(DISTINCT id) AS cnt FROM radio_session_tracks WHERE session_id = ?",
+            "SELECT COUNT(DISTINCT id) AS cnt FROM radio_session_tracks WHERE session_id = %s",
             (session_id,),
         )
         r = cur.fetchone()
@@ -2447,9 +2488,9 @@ def finish_radio_session(
         c.execute(
             """
             UPDATE radio_sessions
-            SET ended_at = ?, status = ?, track_count = ?,
-                notes = COALESCE(?, notes)
-            WHERE session_id = ?
+            SET ended_at = %s, status = %s, track_count = %s,
+                notes = COALESCE(%s, notes)
+            WHERE session_id = %s
             """,
             (ended, status, cnt, notes, session_id),
         )
@@ -2461,7 +2502,7 @@ def finish_radio_session(
 
 def get_radio_sessions(
     limit: int = 50,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[dict[str, Any]]:
     """Return radio sessions ordered by start time descending."""
     own = conn is None
@@ -2476,7 +2517,7 @@ def get_radio_sessions(
             FROM radio_sessions s
             LEFT JOIN recordings r ON s.recording_id = r.recording_id
             ORDER BY s.started_at DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -2488,7 +2529,7 @@ def get_radio_sessions(
 
 def get_radio_session(
     session_id: int,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> Optional[dict[str, Any]]:
     """Return metadata for a single radio session."""
     own = conn is None
@@ -2502,7 +2543,7 @@ def get_radio_session(
                    r.dir AS recording_dir, r.status AS recording_status
             FROM radio_sessions s
             LEFT JOIN recordings r ON s.recording_id = r.recording_id
-            WHERE s.session_id = ?
+            WHERE s.session_id = %s
             """,
             (session_id,),
         ).fetchone()
@@ -2514,7 +2555,7 @@ def get_radio_session(
 
 def get_radio_session_tracks(
     session_id: int,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[dict[str, Any]]:
     """Return tracks identified in a radio session."""
     own = conn is None
@@ -2527,7 +2568,7 @@ def get_radio_session_tracks(
                    play_count, offset_s, has_synced_lyrics, lyric_source,
                    imported, imported_track_id
             FROM radio_session_tracks
-            WHERE session_id = ?
+            WHERE session_id = %s
             ORDER BY first_seen_at ASC
             """,
             (session_id,),
@@ -2541,7 +2582,7 @@ def get_radio_session_tracks(
 def mark_radio_track_imported(
     session_track_id: int,
     imported_track_id: int,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> None:
     """Mark a track in a radio session as imported to library."""
     own = conn is None
@@ -2551,8 +2592,8 @@ def mark_radio_track_imported(
         c.execute(
             """
             UPDATE radio_session_tracks
-            SET imported = 1, imported_track_id = ?
-            WHERE id = ?
+            SET imported = 1, imported_track_id = %s
+            WHERE id = %s
             """,
             (imported_track_id, session_track_id),
         )

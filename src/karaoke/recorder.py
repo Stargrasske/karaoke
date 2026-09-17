@@ -156,11 +156,11 @@ def start(source: str = "", *, keep_audio: bool = False,
         directory.mkdir(parents=True, exist_ok=True)
         cur = c.execute(
             "INSERT INTO recordings (started_at, source, dir, status, keep_audio, note)"
-            " VALUES (?, ?, ?, 'recording', ?, ?)",
+            " VALUES (%s, %s, %s, 'recording', %s, %s) RETURNING recording_id",
             (started, src, str(directory), 1 if keep_audio else 0, note),
         )
+        recording_id = int(cur.fetchone()["recording_id"])
         c.commit()
-        recording_id = int(cur.lastrowid)
     finally:
         if own:
             c.close()
@@ -247,7 +247,7 @@ def add_mark(recording_id: int, ref: Optional[object], *,
         c.execute(
             "INSERT INTO recording_marks"
             " (recording_id, at_wall, at_mono, at_offset, artist, title, ok)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (recording_id, time.time(), time.monotonic(),
              getattr(ref, "offset", None) if ok else None,
              getattr(ref, "artist", "") if ok else "",
@@ -267,8 +267,8 @@ def _finish(recording_id: int, status: str, *, note: str = "") -> None:
     try:
         with localcache.connect() as c:
             c.execute(
-                "UPDATE recordings SET ended_at = ?, status = ?,"
-                " note = COALESCE(NULLIF(?, ''), note) WHERE recording_id = ?",
+                "UPDATE recordings SET ended_at = %s, status = %s,"
+                " note = COALESCE(NULLIF(%s, ''), note) WHERE recording_id = %s",
                 (time.time(), status, note, recording_id),
             )
             c.commit()
@@ -328,9 +328,9 @@ def reconcile_stale(conn: Optional[object] = None) -> list[int]:
                  if int(r["recording_id"]) not in running]
         for recording_id in stale:
             c.execute(
-                "UPDATE recordings SET status = 'complete', ended_at = ?,"
+                "UPDATE recordings SET status = 'complete', ended_at = %s,"
                 " note = COALESCE(note, 'closed out: capture was not running')"
-                " WHERE recording_id = ?",
+                " WHERE recording_id = %s",
                 (time.time(), recording_id))
         if stale:
             c.commit()
@@ -354,7 +354,7 @@ def mark_count(recording_id: int, conn: Optional[object] = None) -> tuple[int, i
     try:
         row = c.execute(
             "SELECT count(*) AS total, COALESCE(sum(ok), 0) AS ok"
-            " FROM recording_marks WHERE recording_id = ?",
+            " FROM recording_marks WHERE recording_id = %s",
             (recording_id,),
         ).fetchone()
         return (int(row["ok"]), int(row["total"])) if row else (0, 0)
@@ -372,7 +372,7 @@ def load_marks(recording_id: int, conn: Optional[object] = None) -> list:
     try:
         rows = c.execute(
             "SELECT at_wall, at_offset, artist, title, ok FROM recording_marks"
-            " WHERE recording_id = ? ORDER BY at_wall",
+            " WHERE recording_id = %s ORDER BY at_wall",
             (recording_id,),
         ).fetchall()
     finally:

@@ -2,16 +2,16 @@
 
 Karaoke is a local terminal sing-along and lyric search platform.
 
-It combines local music metadata, LRCLIB synced lyrics, optional Whisper transcription, Spotify playback position sync, live song identification through songrec, a SQLite operational database, and optional OpenSearch vector indexes for semantic search/training experiments.
+It combines local music metadata, LRCLIB synced lyrics, optional Whisper transcription, Spotify playback position sync, live song identification through songrec, a PostgreSQL operational database, and optional OpenSearch vector indexes for semantic search/training experiments.
 
 ## What it provides
 
 - `karaoke`: render time-synced lyrics in the terminal.
-- SQLite database: source of truth for known tracks, source URLs/URIs, lyrics, play/radio stats and backfill gaps.
+- PostgreSQL database: source of truth for known tracks, source URLs/URIs, lyrics, play/radio stats and backfill gaps. See [Database backend](database.md).
 - `lyricsearch`: semantic "find the song that goes '...'" via lyric embeddings (OpenSearch-derived index).
 - `music-index`: scan local audio files into OpenSearch when vector search/training indexes are wanted.
 - OpenSearch vector indexes: optional derived metadata/lyrics/line vectors for semantic search, sentiment and timing-training experiments.
-- Local SQLite cache: offline lyrics for known songs + play/discovery stats (no cluster needed).
+- Local operational cache: offline lyrics for known songs + play/discovery stats (no cluster needed).
 - Live sync modes: Spotify position, microphone/room audio, laptop output monitor and continuous radio mode.
 
 ## Documentation map

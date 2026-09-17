@@ -66,7 +66,14 @@ def test_radio_session_with_recording_linkage(db):
         conn.execute(
             """
             INSERT INTO recordings (recording_id, started_at, source, dir, status)
-            VALUES (99, ?, 'mic', '/tmp/rec99', 'recording')
+            VALUES (99, %s, 'mic', '/tmp/rec99', 'recording')
+            """,
+            (time.time(),),
+        )
+        conn.execute(
+            """
+            INSERT INTO recordings (recording_id, started_at, source, dir, status)
+            VALUES (101, %s, 'mic', '/tmp/rec101', 'recording')
             """,
             (time.time(),),
         )
@@ -111,7 +118,7 @@ def test_import_radio_session_metadata_only(db, monkeypatch):
         tid = track_row["track_id"]
 
         # Check that youtube source was added
-        src_row = conn.execute("SELECT * FROM sources WHERE track_id=? AND kind='youtube'", (tid,)).fetchone()
+        src_row = conn.execute("SELECT * FROM sources WHERE track_id=%s AND kind='youtube'", (tid,)).fetchone()
         assert src_row is not None
         assert "youtube.com" in src_row["url"]
 
@@ -132,7 +139,7 @@ def test_import_radio_session_with_audio_slice(db, tmp_path, monkeypatch):
         conn.execute(
             """
             INSERT INTO recordings (recording_id, started_at, source, dir, status)
-            VALUES (88, ?, 'mic', ?, 'complete')
+            VALUES (88, %s, 'mic', %s, 'complete')
             """,
             (time.time() - 300, str(rec_dir)),
         )
@@ -169,7 +176,7 @@ def test_import_radio_session_with_audio_slice(db, tmp_path, monkeypatch):
     assert Path(tinfo["audio_slice"]).name == "Oasis - Wonderwall.flac"
 
     with localcache.connect() as conn:
-        src_row = conn.execute("SELECT * FROM sources WHERE track_id=? AND kind='radio_capture'", (tinfo["track_id"],)).fetchone()
+        src_row = conn.execute("SELECT * FROM sources WHERE track_id=%s AND kind='radio_capture'", (tinfo["track_id"],)).fetchone()
         assert src_row is not None
         assert "Oasis - Wonderwall.flac" in src_row["url"]
 
