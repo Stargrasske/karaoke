@@ -64,6 +64,8 @@ karaoke-align-review = "karaoke.lyric_align:review_main"
 karaoke-similar = "karaoke.search:similar_main"
 karaoke-sounds-like = "karaoke.search:describe_main"
 karaoke-ytmusic-playlist = "karaoke.ytmusic_playlist:ytmusic_playlist_main"
+karaoke-mcp = "karaoke.mcp_server:main"
+karaoke-dj = "karaoke.dj_chat:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -39,6 +39,8 @@ go stale. The ones worth knowing:
 
 | key | does |
 |---|---|
+| `D` | AI DJ Booth modal (Camelot suggestions, `dj-list` playlist, Ollama chat) |
+| `v` | Lyric Vibe on current playing song (mood arc, sentiment bars, vocal delivery tips) |
 | `H` | library overlay; picking a song closes it |
 | `-` `/` `+` | adjust mood energy slider floor (real-time filtering) |
 | `a` | enqueue highlighted track to end of active queue |
@@ -50,6 +52,22 @@ go stale. The ones worth knowing:
 | `T` | stats — library, pipeline, listening, keys, tempo |
 | `?` | key reference |
 | `,` `.` | nudge lyric sync ∓0.1s, `S` saves it for that track |
+
+## AI DJ Booth & `dj-list` Playlist Management (`D`)
+
+Pressing `D` opens the interactive **AI DJ Booth**:
+- **Harmonic Flow Suggestions**: Suggests Camelot wheel adjacent keys (+/- 1 step, relative major/minor) and matching BPMs from currently playing or crowd top tracks.
+- **Numbered 1-Click Queuing**: Suggestions are formatted as `[1]`, `[2]`, `[3]`, `[4]` with track details. Simply type `1`, `2`, `all`, or click `[+ Add #1]` / `[+ Add All]` to queue without needing raw track IDs.
+- **Persistent `dj-list` Playlist**: Tracks added via the DJ are stored in PostgreSQL under the canonical `dj-list` playlist.
+- **Live Player Sync & Follow**: Pressing `[🎧 Follow DJ]` or running `/follow-dj` loads `dj-list` directly into the live player queue and tracks playback changes.
+- **Commands**:
+  - `/suggest [strategy]`: Recommend next tracks (`harmonic`, `energy_up`, `cool_down`, `acoustic`).
+  - `1`..`4` or `/queue <#|query|track_id>`: Add to `dj-list` and player queue.
+  - `/queue all` (or `all`): Add all active suggestions.
+  - `/dj-list` (or `/playlist`): View current tracks in `dj-list`.
+  - `/follow-dj`: Follow & load `dj-list` into live player.
+  - `/clear-dj`: Empty `dj-list`.
+  - `/now`, `/vibe`, `/stats`, `/search <query>`.
 
 ## Library, Mood Slider & Playlist Controls
 
@@ -114,6 +132,16 @@ ones that can actually drive a session. `backlog` is what
 `scripts/enqueue_postprocess.py` would pick up.
 
 Degrades gracefully: a broker outage drops the worker rows and keeps the rest.
+
+## AI DJ Chat (`D`)
+
+Pressing **`D`** opens the interactive **Karaoke AI DJ Booth** modal. From here, you can:
+- Query currently playing audio, detected musical key, and Camelot codes (`/now`).
+- Request harmonically compatible follow-up tracks or energy progression (`/suggest`).
+- Inspect lyric sentiment, emotional arcs, and singer vocal delivery tips (`/vibe`).
+- Check crowd favorites and library stats (`/stats`).
+- Search the 18,000+ local track database (`/search <query>`) and launch playback (`/play <track_id>`).
+- Chat in natural language backed by local **Ollama** (`qwen3:1.7b` / `qwen3:latest` on AMD ROCm).
 
 ## Modes
 

@@ -209,3 +209,31 @@ def test_create_asgi_app_endpoints():
         assert r_post.status_code == 200
         assert "capabilities" in r_post.text
 
+
+def test_dj_playlist_tools(playable_track):
+    """Verify add_to_dj_playlist, get_dj_playlist, and clear_dj_playlist tools."""
+    # 1. Clear playlist initially
+    r_clear = json.loads(mcp_server.clear_dj_playlist())
+    assert r_clear["ok"] is True
+
+    # 2. Add track by ID
+    r_add = json.loads(mcp_server.add_to_dj_playlist(track_id=playable_track))
+    assert r_add["ok"] is True
+    assert r_add["playlist_id"] in ("dj-list", "PLeaH9ITPDGQo") or r_add["playlist_id"].startswith("PL")
+    assert r_add["position"] == 1
+    assert r_add["track"]["track_id"] == playable_track
+    assert r_add["track"]["artist"] == "The Doors"
+
+    # 3. Retrieve playlist
+    r_get = json.loads(mcp_server.get_dj_playlist())
+    assert r_get["playlist_id"] in ("dj-list", "PLeaH9ITPDGQo") or r_get["playlist_id"].startswith("PL")
+    assert r_get["track_count"] == 1
+    assert len(r_get["tracks"]) == 1
+    assert r_get["tracks"][0]["title"] == "Wild Child"
+
+    # 4. Clear playlist and verify empty
+    r_clear2 = json.loads(mcp_server.clear_dj_playlist())
+    assert r_clear2["ok"] is True
+    r_get2 = json.loads(mcp_server.get_dj_playlist())
+    assert r_get2["track_count"] == 0
+    assert r_get2["tracks"] == []

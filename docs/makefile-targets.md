@@ -18,6 +18,7 @@ ctrl-api                     Launch the host-side control API (playback; needs a
 db-cleanup                   Run track deduplication (fuzzy title + duration guard), orphan source auto-fill, and cache healing
 db-cleanup-dry-run           Preview duplicate-track merges without writing anything
 deps-make2graph              Fetch and build makefile2graph locally
+dj                           Open the interactive Karaoke AI DJ Chat booth in terminal
 docs                         Build MkDocs site
 docs-audit                   Audit documentation for drift (modules, unlinked docs, targets)
 docs-confluence-prep         Generate Confluence-friendly docs tree
@@ -42,6 +43,7 @@ k8s-seed-db                  Copy the local SQLite library into the cluster PVC
 k8s-status                   Show deployed karaoke resources
 k8s-undeploy                 Remove the karaoke API from the cluster (keeps the PVC)
 lint                         Run lint checks
+mcp                          Launch the Karaoke AI DJ MCP Server (SSE on :8888 for Obot / Claude)
 mic-test                     Live mic VU meter to confirm capture level (SECS=4)
 mq-port-forward              Expose the in-cluster RabbitMQ AMQP on localhost:5672 (management on 15672)
 postprocess-enqueue-all      Enqueue every track missing key/BPM or word-timing for post-processing

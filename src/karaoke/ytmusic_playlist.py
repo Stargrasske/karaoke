@@ -524,6 +524,102 @@ def add_track_to_ytmusic_playlist(
         return False, str(exc)
 
 
+def clear_ytmusic_playlist(
+    playlist_id: str,
+    client: Optional[YTMusicClient] = None,
+) -> bool:
+    """Remove all items from a remote YouTube Music playlist."""
+    if not playlist_id:
+        return False
+    yt = client or YTMusicClient()
+    try:
+        yt.require_auth()
+        raw = yt.get_playlist(playlist_id, limit=500)
+        existing = [
+            track for track in (raw.get("tracks") or [])
+            if track.get("videoId") and track.get("setVideoId")
+        ]
+        if existing:
+            yt.remove_playlist_items(playlist_id, existing)
+        return True
+    except Exception as exc:
+        log.warning("Failed to clear remote YouTube Music playlist %s: %s", playlist_id, exc)
+        return False
+
+
+def resolve_or_create_dj_playlist(
+    name: str = "Karaoke: DJ List",
+    client: Optional[YTMusicClient] = None,
+    conn: Optional[Connection] = None,
+) -> tuple[str, str]:
+    """Find or create the Karaoke DJ playlist in YouTube Music.
+
+    Returns:
+        (playlist_id, playlist_url)
+    """
+    # 1. Check localcache first
+    own_conn = conn is None
+    c = conn or localcache.connect()
+    try:
+        pl = localcache.find_saved_playlist_by_id("dj-list", conn=c)
+        if pl and pl.get("url") and "list=PL" in pl["url"]:
+            pid = pl["url"].split("list=")[-1].split("&")[0]
+            return pid, pl["url"]
+
+        cur = c.cursor()
+        cur.execute(
+            "SELECT playlist_id, url FROM saved_playlists WHERE (name ILIKE %s OR playlist_id = 'dj-list') AND url LIKE '%%list=PL%%' LIMIT 1",
+            (f"%{name}%",),
+        )
+        row = cur.fetchone()
+        if row and row["url"]:
+            pid = row["playlist_id"] if str(row["playlist_id"]).startswith("PL") else row["url"].split("list=")[-1].split("&")[0]
+            return pid, row["url"]
+    finally:
+        if own_conn:
+            c.close()
+
+    # 2. Check YouTube Music library
+    yt = client or YTMusicClient()
+    try:
+        yt.require_auth()
+        playlists = yt.get_library_playlists(limit=500)
+        target_id = None
+        for p in playlists:
+            title = str(p.get("title") or "").strip().lower()
+            if title in (name.lower(), "karaoke: dj list", "karaoke dj list", "dj-list"):
+                target_id = str(p.get("playlistId") or "")
+                break
+
+        if not target_id:
+            target_id = yt.create_playlist(
+                title=name,
+                description="AI Karaoke DJ setlist and smart recommendations.",
+                privacy_status="PRIVATE",
+                video_ids=[],
+            )
+
+        url = f"https://music.youtube.com/playlist?list={target_id}"
+
+        # Persist locally under target_id and remove duplicate legacy 'dj-list' row
+        with (conn or localcache.connect()) as c2:
+            localcache.save_playlist(
+                target_id,
+                name,
+                search_query="",
+                tracks=None,
+                url=url,
+                source_kind="dj",
+                conn=c2,
+            )
+            c2.execute("DELETE FROM saved_playlists WHERE playlist_id = 'dj-list'")
+            c2.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = 'dj-list'")
+        return target_id, url
+    except Exception as exc:
+        log.warning("Could not reach YouTube Music API, falling back to local dj-list: %s", exc)
+        return "dj-list", ""
+
+
 def reconcile_playlist_with_remote(
     playlist_id: str,
     local_rows: list[dict[str, Any]],
@@ -577,8 +673,12 @@ def reconcile_playlist_with_remote(
             if not vid:
                 continue
             title = str(t.get("title") or "").strip()
-            artists = t.get("artists") or []
-            artist = str(artists[0].get("name") if artists and isinstance(artists[0], dict) else "").strip()
+            artist = str(t.get("artist") or "").strip()
+            if not artist and t.get("artists"):
+                artists = t["artists"]
+                if isinstance(artists, list) and artists:
+                    first = artists[0]
+                    artist = str(first.get("name") if isinstance(first, dict) else first).strip()
 
             found = c.execute(
                 """
@@ -594,18 +694,34 @@ def reconcile_playlist_with_remote(
                 (f"%{vid}%",),
             ).fetchone()
 
+            if not found and artist and title:
+                tid = localcache.find_track_id_relaxed(artist, title, c)
+                if tid:
+                    found = c.execute(
+                        """
+                        SELECT t.track_id, t.artist, t.title,
+                               g.genre, a.energy, a.bpm, a.detected_key AS key
+                        FROM tracks t
+                        LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                        LEFT JOIN track_genre g ON g.track_id = t.track_id
+                        WHERE t.track_id = %s
+                        LIMIT 1
+                        """,
+                        (tid,),
+                    ).fetchone()
+
             if found:
                 reconciled_rows.append({
                     "track_id": found["track_id"],
                     "artist": found["artist"] or artist,
                     "title": found["title"] or title,
                     "video_id": vid,
-                    "url": found["url"] or f"https://music.youtube.com/watch?v={vid}",
-                    "kind": found["kind"] or "youtube_music",
-                    "genre": found["genre"],
-                    "energy": found["energy"],
-                    "bpm": found["bpm"],
-                    "key": found["key"],
+                    "url": found.get("url") or f"https://music.youtube.com/watch?v={vid}",
+                    "kind": found.get("kind") or "youtube_music",
+                    "genre": found.get("genre"),
+                    "energy": found.get("energy"),
+                    "bpm": found.get("bpm"),
+                    "key": found.get("key"),
                 })
             else:
                 reconciled_rows.append({

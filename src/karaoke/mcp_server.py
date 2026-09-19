@@ -91,8 +91,8 @@ def search_songs(
 
         if query.strip():
             pat = f"%{query.strip()}%"
-            where_clauses.append("(t.artist ILIKE %s OR t.title ILIKE %s OR t.album ILIKE %s)")
-            params.extend([pat, pat, pat])
+            where_clauses.append("(t.artist ILIKE %s OR t.title ILIKE %s OR t.album ILIKE %s OR (t.artist || ' ' || t.title) ILIKE %s)")
+            params.extend([pat, pat, pat, pat])
 
         if genre.strip():
             where_clauses.append("g.genre ILIKE %s")
@@ -181,17 +181,34 @@ def get_now_playing() -> str:
         title = meta.title
         # Look up in library
         with localcache.connect() as conn:
+            tid = localcache.find_track_id_relaxed(artist, title, conn)
+            if not tid and meta.url:
+                found = localcache.find_track_by_url(meta.url, conn)
+                if found:
+                    tid = found[0]
+
             cur = conn.cursor()
-            cur.execute("""
-                SELECT t.track_id, a.detected_key, a.bpm, a.energy, g.genre
-                FROM tracks t
-                LEFT JOIN track_analysis a ON a.track_id = t.track_id
-                LEFT JOIN track_genre g ON g.track_id = t.track_id
-                WHERE t.artist ILIKE %s AND t.title ILIKE %s
-                LIMIT 1
-            """, (f"%{artist}%", f"%{title}%"))
+            if tid is not None:
+                cur.execute("""
+                    SELECT t.track_id, t.artist, t.title, a.detected_key, a.bpm, a.energy, g.genre
+                    FROM tracks t
+                    LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                    LEFT JOIN track_genre g ON g.track_id = t.track_id
+                    WHERE t.track_id = %s
+                """, (tid,))
+            else:
+                cur.execute("""
+                    SELECT t.track_id, t.artist, t.title, a.detected_key, a.bpm, a.energy, g.genre
+                    FROM tracks t
+                    LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                    LEFT JOIN track_genre g ON g.track_id = t.track_id
+                    WHERE (t.artist ILIKE %s AND t.title ILIKE %s)
+                       OR ((t.artist || ' ' || t.title) ILIKE %s)
+                    LIMIT 1
+                """, (f"%{artist}%", f"%{title}%", f"%{artist} {title}%"))
             row = cur.fetchone()
 
+            track_id = row["track_id"] if row else tid
             key_info = None
             if row and row["detected_key"]:
                 k = musictheory.parse_key(row["detected_key"])
@@ -206,8 +223,9 @@ def get_now_playing() -> str:
             return json.dumps({
                 "status": "playing",
                 "player": meta.player or active_player or "mpris",
-                "artist": artist,
-                "title": title,
+                "artist": row["artist"] if row else artist,
+                "title": row["title"] if row else title,
+                "track_id": track_id,
                 "album": meta.album or "",
                 "duration_s": meta.duration,
                 "url": meta.url,
@@ -270,6 +288,18 @@ def suggest_next_tracks(
                 WHERE t.artist ILIKE %s AND t.title ILIKE %s
                 LIMIT 1
             """, (f"%{artist}%", f"%{title}%"))
+            seed_track = cur.fetchone()
+
+        if not seed_track:
+            cur.execute("""
+                SELECT t.track_id, t.artist, t.title, a.detected_key, a.bpm, a.energy, g.genre
+                FROM tracks t
+                JOIN track_analysis a ON a.track_id = t.track_id
+                LEFT JOIN track_genre g ON g.track_id = t.track_id
+                WHERE a.bpm IS NOT NULL
+                ORDER BY t.play_count DESC, t.track_id ASC
+                LIMIT 1
+            """)
             seed_track = cur.fetchone()
 
         if not seed_track:
@@ -432,6 +462,17 @@ def analyze_lyric_vibe(track_id: int) -> str:
         if not lyrics_text and lyrics and lyrics.synced_lyrics:
             lyrics_text = "\n".join(t for _, t in lyrics.lines)
 
+        if not lyrics_text and t_row:
+            try:
+                from . import lyrics as lyrics_mod
+                fetched = lyrics_mod.fetch_lrclib(t_row["artist"], t_row["title"])
+                if fetched:
+                    localcache.save_lyrics(track_id, fetched, conn)
+                    lyrics = fetched
+                    lyrics_text = lyrics.plain or "\n".join(t for _, t in lyrics.lines)
+            except Exception:
+                pass
+
         profile = visuals.analyze_sentiment(lyrics_text or "")
         arc = visuals.sentiment_arc(profile, width=20)
         bars = visuals.sentiment_bars(profile, width=10)
@@ -557,6 +598,198 @@ def play_track(track_id: int, prefer_audio_only: bool = False) -> str:
             "target": target,
             "karaoke_cli_command": f'karaoke "{artist} - {title}"',
         }, indent=2)
+
+
+@dj_mcp.tool()
+def add_to_dj_playlist(
+    track_id: Optional[int] = None,
+    artist: Optional[str] = None,
+    title: Optional[str] = None,
+    playlist_id: str = "dj-list",
+) -> str:
+    """Add a song to the DJ playlist ('Karaoke: DJ List') by track ID or artist/title, syncing with YouTube Music.
+
+    Args:
+        track_id: Specific track ID from the karaoke library.
+        artist: Artist name (used if track_id is omitted).
+        title: Title of song (used if track_id is omitted).
+        playlist_id: Identifier of target saved playlist (default 'dj-list').
+    """
+    if track_id is None and not (artist or title):
+        return json.dumps({"error": "Either track_id or artist/title must be provided."})
+
+    with localcache.connect() as conn:
+        cur = conn.cursor()
+        if track_id is not None:
+            cur.execute("""
+                SELECT t.track_id, t.artist, t.title, a.detected_key, a.bpm, s.url, s.kind
+                FROM tracks t
+                LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                LEFT JOIN sources s ON s.source_id = (
+                    SELECT s2.source_id FROM sources s2
+                    WHERE s2.track_id = t.track_id
+                    ORDER BY
+                        CASE
+                            WHEN s2.kind = 'youtube_music' THEN 0
+                            WHEN s2.kind = 'youtube' THEN 1
+                            WHEN s2.url LIKE 'http%%' THEN 2
+                            WHEN s2.kind = 'spotify' THEN 3
+                            ELSE 4
+                        END,
+                        s2.source_id
+                    LIMIT 1
+                )
+                WHERE t.track_id = %s
+            """, (track_id,))
+            row = cur.fetchone()
+        else:
+            pat_artist = f"%{artist.strip()}%" if artist else "%"
+            pat_title = f"%{title.strip()}%" if title else "%"
+            cur.execute("""
+                SELECT t.track_id, t.artist, t.title, a.detected_key, a.bpm, s.url, s.kind
+                FROM tracks t
+                LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                LEFT JOIN sources s ON s.source_id = (
+                    SELECT s2.source_id FROM sources s2
+                    WHERE s2.track_id = t.track_id
+                    ORDER BY
+                        CASE
+                            WHEN s2.kind = 'youtube_music' THEN 0
+                            WHEN s2.kind = 'youtube' THEN 1
+                            WHEN s2.url LIKE 'http%%' THEN 2
+                            WHEN s2.kind = 'spotify' THEN 3
+                            ELSE 4
+                        END,
+                        s2.source_id
+                    LIMIT 1
+                )
+                WHERE t.artist ILIKE %s AND t.title ILIKE %s
+                ORDER BY t.play_count DESC
+                LIMIT 1
+            """, (pat_artist, pat_title))
+            row = cur.fetchone()
+
+        if not row:
+            return json.dumps({"error": f"Track not found in library (track_id={track_id}, artist={artist}, title={title})."})
+
+        # Resolve real YouTube Music playlist
+        yt_pid = playlist_id
+        yt_url = ""
+        if playlist_id in ("dj-list", "Karaoke: DJ List"):
+            try:
+                from . import ytmusic_playlist
+                yt_pid, yt_url = ytmusic_playlist.resolve_or_create_dj_playlist(conn=conn)
+            except Exception:
+                yt_pid = "dj-list"
+
+        # Ensure playlist exists locally
+        localcache.ensure_dj_playlist(playlist_id=yt_pid, conn=conn)
+
+
+        url = row["url"] or ""
+        vid = localcache.extract_youtube_id(url) if url else ""
+
+        # Sync to remote YouTube Music playlist if authenticated
+        if yt_pid.startswith(("PL", "VL", "RD", "OLAK5")):
+            try:
+                from . import ytmusic_playlist
+                ok, res_vid = ytmusic_playlist.add_track_to_ytmusic_playlist(yt_pid, row["artist"], row["title"], video_id=vid)
+                if ok and res_vid and not vid:
+                    vid = res_vid
+                    url = f"https://music.youtube.com/watch?v={vid}"
+            except Exception as exc:
+                log.warning("Could not sync track to YouTube Music playlist %s: %s", yt_pid, exc)
+
+        track_payload = {
+            "track_id": row["track_id"],
+            "artist": row["artist"],
+            "title": row["title"],
+            "video_id": vid,
+            "url": url,
+        }
+        pos = localcache.append_playlist_track(yt_pid, track_payload, conn=conn)
+
+        key_obj = musictheory.parse_key(row["detected_key"]) if row["detected_key"] else None
+        return json.dumps({
+            "ok": True,
+            "playlist_id": yt_pid,
+            "playlist_url": yt_url or (f"https://music.youtube.com/playlist?list={yt_pid}" if yt_pid.startswith("PL") else ""),
+            "position": pos,
+            "track": {
+                "track_id": row["track_id"],
+                "artist": row["artist"],
+                "title": row["title"],
+                "key": row["detected_key"] or "",
+                "camelot": key_obj.camelot if key_obj else "?",
+                "bpm": round(row["bpm"], 1) if row["bpm"] else None,
+                "url": url,
+            }
+        }, indent=2)
+
+
+@dj_mcp.tool()
+def get_dj_playlist(playlist_id: str = "dj-list") -> str:
+    """Retrieve all songs in the DJ playlist ('Karaoke: DJ List') with position, metadata, and YouTube Music URL.
+
+    Args:
+        playlist_id: The saved playlist ID (default 'dj-list').
+    """
+    with localcache.connect() as conn:
+        yt_pid = playlist_id
+        yt_url = ""
+        if playlist_id in ("dj-list", "Karaoke: DJ List"):
+            try:
+                from . import ytmusic_playlist
+                yt_pid, yt_url = ytmusic_playlist.resolve_or_create_dj_playlist(conn=conn)
+            except Exception:
+                yt_pid = "dj-list"
+
+        pl = localcache.find_saved_playlist_by_id(yt_pid, conn=conn) or localcache.find_saved_playlist_by_id("dj-list", conn=conn)
+        tracks = localcache.get_saved_playlist_tracks(yt_pid, conn=conn)
+        if not tracks and yt_pid != "dj-list":
+            tracks = localcache.get_saved_playlist_tracks("dj-list", conn=conn)
+
+    return json.dumps({
+        "playlist_id": yt_pid,
+        "name": (pl.get("name") if pl else "") or "Karaoke: DJ List",
+        "url": yt_url or (pl.get("url") if pl else "") or (f"https://music.youtube.com/playlist?list={yt_pid}" if yt_pid.startswith("PL") else ""),
+        "track_count": len(tracks),
+        "tracks": tracks,
+    }, indent=2)
+
+
+@dj_mcp.tool()
+def clear_dj_playlist(playlist_id: str = "dj-list") -> str:
+    """Empty all tracks from the DJ playlist ('Karaoke: DJ List') locally and on YouTube Music.
+
+    Args:
+        playlist_id: The saved playlist ID to clear (default 'dj-list').
+    """
+    with localcache.connect() as conn:
+        yt_pid = playlist_id
+        if playlist_id in ("dj-list", "Karaoke: DJ List"):
+            try:
+                from . import ytmusic_playlist
+                yt_pid, _ = ytmusic_playlist.resolve_or_create_dj_playlist(conn=conn)
+            except Exception:
+                yt_pid = "dj-list"
+
+        if yt_pid.startswith(("PL", "VL", "RD", "OLAK5")):
+            try:
+                from . import ytmusic_playlist
+                ytmusic_playlist.clear_ytmusic_playlist(yt_pid)
+            except Exception as exc:
+                log.warning("Failed to clear remote YouTube Music playlist %s: %s", yt_pid, exc)
+
+        localcache.clear_saved_playlist_tracks(yt_pid, conn=conn)
+        if yt_pid != "dj-list":
+            localcache.clear_saved_playlist_tracks("dj-list", conn=conn)
+
+    return json.dumps({
+        "ok": True,
+        "playlist_id": yt_pid,
+        "message": f"Cleared all tracks from playlist '{yt_pid}'.",
+    }, indent=2)
 
 
 class CombinedMCPApp:

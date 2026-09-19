@@ -346,6 +346,15 @@ This reference is generated from Python docstrings with `mkdocstrings`.
 
 ::: karaoke.relay
 
+
+## Dj Chat
+
+::: karaoke.dj_chat
+
+## Mcp Server
+
+::: karaoke.mcp_server
+
 ## `GET /api/workers/status`
 
 Celery worker, queue and Flower dashboard status. Allows monitoring the

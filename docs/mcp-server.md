@@ -63,6 +63,9 @@ text/event-stream"`, or just hit `/health`.
 | `analyze_lyric_vibe` | Lyric mood arc, sentiment breakdown, and singer delivery tips | `track_id` |
 | `get_dj_stats` | Play counts, top artists, crowd favorites, and discovery history | — |
 | `play_track` | Trigger playback via the host karaoke player | `track_id`, `prefer_audio_only` |
+| `add_to_dj_playlist` | Add track to the persistent `dj-list` playlist by ID or title/artist | `track_id`, `artist`, `title`, `playlist_id` |
+| `get_dj_playlist` | Retrieve tracks, positions, and metadata from the DJ playlist | `playlist_id` (default `dj-list`) |
+| `clear_dj_playlist` | Empty all tracks from the DJ playlist | `playlist_id` (default `dj-list`) |
 
 ## Service Management
 
@@ -101,6 +104,23 @@ make mcp                               # Run manually in foreground
    proxied request.
 
 ## Talking to the DJ
+
+### In the Karaoke TUI (`D` key)
+
+You can chat with the AI DJ directly inside the Karaoke TUI:
+- Press **`D`** anywhere in the TUI to open the **AI DJ Chat Booth** modal.
+- Use the quick action buttons or slash commands:
+  - `/now` — Track, player, detected Camelot key, and BPM
+  - `/suggest [harmonic|energy_up|cool_down|acoustic]` — Next song flow
+  - `/vibe [track_id]` — Lyric mood arc, sentiment breakdown, and singing delivery tips
+  - `/stats` — Crowd anthems, hit counts, and cache statistics
+  - `/search <query>` — Search the 18,000+ local track library
+  - `/play <track_id>` — Launch track playback on the host player
+  - `/model <name>` — Switch Ollama model (e.g. `qwen3:1.7b`, `qwen3:latest`)
+- Or run standalone in your terminal: `make dj` or `karaoke-dj`.
+- Connects to local **Ollama** (`qwen3:1.7b` / `qwen3:latest`) with instant deterministic fallback to local library tools if the LLM is offline or busy.
+
+### Using External MCP Clients (Claude Code / Claude Desktop)
 
 Obot Community is an MCP gateway, not a chat product: it has no agent builder
 and no chat window. Point an MCP client at the server instead.

@@ -33,7 +33,7 @@ K8S_NAMESPACE ?= karaoke
 .PHONY: help venv install install-confluence docs docs-live docs-write docs-audit docs-sync docs-confluence-prep \
         docs-confluence-publish deps-make2graph view_makeflow lint format \
         test test-audio mic-test stats clean clean-tools browse tui browse-log \
-        install-audio analyze api ctrl-api \
+        install-audio analyze api ctrl-api mcp dj \
         k8s-build k8s-load k8s-deploy k8s-seed-db k8s-status k8s-logs k8s-undeploy \
         upgrade-timings upgrade-timings-dry-run \
         index-youtube-cache db-cleanup db-cleanup-dry-run vector-index vector-index-dry-run vector-status folder-scan \
@@ -201,6 +201,12 @@ api: ## Launch the FastAPI library backend (read-only: tracks, lyrics, stats)
 ctrl-api: ## Launch the host-side control API (playback; needs a desktop session)
 	$(PYTHON) -m karaoke.ctrl_api
 
+mcp: ## Launch the Karaoke AI DJ MCP Server (SSE on :8888 for Obot / Claude)
+	$(PYTHON) -m karaoke.mcp_server --host 0.0.0.0 --port 8888
+
+dj: ## Open the interactive Karaoke AI DJ Chat booth in terminal
+	$(PYTHON) -m karaoke.dj_chat
+
 k8s-build: ## Build the library API container image
 	# --network=host: the default docker bridge has no working DNS on this host,
 	# so pip cannot resolve pypi.org during the build without it.
@@ -294,6 +300,7 @@ systemd-install: ## Install/refresh the karaoke systemd --user units (symlinks t
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-kiosk.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-webtui.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-relay.service $(HOME)/.config/systemd/user/
+	ln -sf $(CURDIR)/deploy/systemd/karaoke-mcp.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-postprocess@.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-postprocess.slice $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-healthcheck.service $(HOME)/.config/systemd/user/

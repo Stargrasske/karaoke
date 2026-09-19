@@ -2212,6 +2212,7 @@ def get_saved_playlists(
             """
             SELECT playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at
             FROM saved_playlists
+            WHERE playlist_id != 'dj-list'
             ORDER BY updated_at DESC
             LIMIT %s
             """,
@@ -2253,6 +2254,11 @@ def get_saved_playlist_tracks(
             """,
             (playlist_id,),
         ).fetchall()
+        if not rows and playlist_id == "dj-list":
+            pl = find_saved_playlist_by_id("dj-list", conn=c)
+            if pl and pl.get("playlist_id") and pl["playlist_id"] != "dj-list":
+                return get_saved_playlist_tracks(pl["playlist_id"], conn=c)
+
         return [
             {
                 "position": r["position"],
@@ -2288,6 +2294,16 @@ def find_saved_playlist_by_id(
             """,
             (playlist_id,),
         ).fetchone()
+        if not r and playlist_id == "dj-list":
+            r = c.execute(
+                """
+                SELECT playlist_id, name, search_query, track_count, url, source_kind, created_at, updated_at
+                FROM saved_playlists
+                WHERE (name ILIKE %s OR source_kind = 'dj') AND url LIKE '%%list=PL%%'
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                ("%DJ List%",),
+            ).fetchone()
         if not r:
             return None
         return {
@@ -2381,14 +2397,67 @@ def append_playlist_track(
         )
         c.execute(
             """
-            UPDATE saved_playlists
-            SET track_count = track_count + 1, updated_at = %s
-            WHERE playlist_id = %s
+            INSERT INTO saved_playlists (playlist_id, name, track_count, source_kind, created_at, updated_at)
+            VALUES (%s, %s, 1, 'dj', %s, %s)
+            ON CONFLICT (playlist_id) DO UPDATE SET
+                track_count = saved_playlists.track_count + 1,
+                updated_at = %s
             """,
-            (now, playlist_id),
+            (playlist_id, playlist_id, now, now, now),
         )
         c.commit()
         return new_pos
+    finally:
+        if own:
+            c.close()
+
+
+def clear_saved_playlist_tracks(
+    playlist_id: str,
+    conn: Optional[Connection] = None,
+) -> None:
+    """Remove all tracks from a playlist and reset track_count to 0."""
+    if not playlist_id:
+        return
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        c.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = %s", (playlist_id,))
+        now = time.time()
+        c.execute(
+            "UPDATE saved_playlists SET track_count = 0, updated_at = %s WHERE playlist_id = %s",
+            (now, playlist_id),
+        )
+        c.commit()
+    finally:
+        if own:
+            c.close()
+
+
+def ensure_dj_playlist(
+    playlist_id: str = "dj-list",
+    name: str = "Karaoke AI DJ List",
+    conn: Optional[Connection] = None,
+) -> dict[str, Any]:
+    """Ensure the DJ playlist exists in saved_playlists, creating it if missing."""
+    own = conn is None
+    c = conn or connect()
+    try:
+        ensure_saved_searches_and_playlists_schema(c)
+        pl = find_saved_playlist_by_id(playlist_id, conn=c)
+        if not pl:
+            save_playlist(
+                playlist_id=playlist_id,
+                name=name,
+                search_query="",
+                tracks=[],
+                url="",
+                source_kind="dj",
+                conn=c,
+            )
+            pl = find_saved_playlist_by_id(playlist_id, conn=c)
+        return pl or {"playlist_id": playlist_id, "name": name, "track_count": 0}
     finally:
         if own:
             c.close()

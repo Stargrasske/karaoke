@@ -58,6 +58,7 @@ from . import (detect, localcache, playerctl, recorder, sample_audio,
                staging, track_analysis, visuals)
 from .api_client import ApiClient
 from .browse import open_song_url
+from .dj_chat import DJChatScreen
 from .player_open import (browser_playback, close_cdp, track_finished,
                           track_idle)
 from .logger import LOG_FILE, log, stream_logs
@@ -796,6 +797,22 @@ class SavedPlaylistsScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         self._populate_table()
+        self.run_worker(self._auto_sync_remote_playlists, thread=True)
+
+    def _auto_sync_remote_playlists(self) -> None:
+        try:
+            from . import ytmusic_playlist
+            with localcache.connect() as conn:
+                dj_pid, _ = ytmusic_playlist.resolve_or_create_dj_playlist(conn=conn)
+                if dj_pid and dj_pid.startswith(("PL", "VL", "RD", "OLAK5")):
+                    local_tracks = localcache.get_saved_playlist_tracks(dj_pid, conn=conn)
+                    client = ytmusic_playlist.get_ytmusic_client()
+                    ytmusic_playlist.reconcile_playlist_with_remote(
+                        dj_pid, local_tracks, client=client, conn=conn
+                    )
+            self.app.call_from_thread(self._refresh_playlists)
+        except Exception:
+            pass
 
     def _populate_table(self) -> None:
         table = self.query_one("#playlists-table", DataTable)
@@ -836,40 +853,70 @@ class SavedPlaylistsScreen(ModalScreen[None]):
         self._load_playlist(str(key))
 
     def _load_playlist(self, playlist_id: str) -> None:
-        with localcache.connect() as conn:
-            tracks = localcache.get_saved_playlist_tracks(playlist_id, conn=conn)
-            pl = localcache.find_saved_playlist_by_id(playlist_id, conn=conn)
+        self.app.notify(f"Syncing & opening playlist in YouTube Music…")
 
-        if not tracks:
-            self.app.notify(f"Playlist {playlist_id} has no tracks", severity="warning")
-            return
+        def _bg() -> None:
+            try:
+                from . import ytmusic_playlist, player_open
+                with localcache.connect() as conn:
+                    client = ytmusic_playlist.get_ytmusic_client()
+                    local_tracks = localcache.get_saved_playlist_tracks(playlist_id, conn=conn)
+                    if playlist_id.startswith(("PL", "VL", "RD", "OLAK5")):
+                        reconciled_rows, _ = ytmusic_playlist.reconcile_playlist_with_remote(
+                            playlist_id, local_tracks, client=client, conn=conn
+                        )
+                    else:
+                        reconciled_rows = local_tracks
+                    pl = localcache.find_saved_playlist_by_id(playlist_id, conn=conn)
 
-        rows = [
-            {
-                "track_id": t.get("track_id"),
-                "artist": t.get("artist") or "",
-                "title": t.get("title") or "",
-                "url": t.get("url") or (f"https://music.youtube.com/watch?v={t['video_id']}" if t.get("video_id") else ""),
-                "kind": "ytmusic",
-            }
-            for t in tracks
-        ]
-        pl_name = (pl.get("name") if pl else "") or playlist_id
-        self.app._apply_restored_playlist(rows, playlist_id, pl_name)
-        self.app.notify(f"Loaded playlist '{pl_name}' ({len(rows)} tracks)")
+                tracks_to_load = reconciled_rows or local_tracks
+                if not tracks_to_load:
+                    self.app.call_from_thread(
+                        self.app.notify, f"Playlist {playlist_id} has no tracks", severity="warning"
+                    )
+                    return
+
+                rows = [
+                    {
+                        "track_id": t.get("track_id"),
+                        "artist": t.get("artist") or "",
+                        "title": t.get("title") or "",
+                        "url": t.get("url") or (f"https://music.youtube.com/watch?v={t['video_id']}" if t.get("video_id") else ""),
+                        "kind": "ytmusic",
+                        "key": str(t.get("key") or "—"),
+                    }
+                    for t in tracks_to_load
+                ]
+                pl_name = (pl.get("name") if pl else "") or playlist_id
+                first_vid = next((r.get("video_id") or localcache.extract_youtube_id(r.get("url", "")) for r in rows if (r.get("video_id") or r.get("url"))), "")
+
+                # Load into player queue so TUI follows
+                self.app.call_from_thread(self.app._apply_restored_playlist, rows, playlist_id, pl_name)
+
+                # Open the playlist in YouTube Music so player plays it & TUI follows
+                play_url = (
+                    f"https://music.youtube.com/watch?v={first_vid}&list={playlist_id}"
+                    if first_vid and playlist_id.startswith(("PL", "VL", "RD", "OLAK5"))
+                    else (pl.get("url") if pl and pl.get("url") else f"https://music.youtube.com/playlist?list={playlist_id}")
+                )
+                player_open.open_song_url(play_url, "youtube_music_playlist", prefer_audio=True)
+                self.app.call_from_thread(
+                    self.app.notify, f"Loaded & opened '{pl_name}' in YouTube Music ({len(rows)} tracks)"
+                )
+            except Exception as exc:
+                log.warning("Could not sync and load playlist %s: %s", playlist_id, exc)
+                self.app.call_from_thread(
+                    self.app.notify, f"Load failed: {exc}", severity="error"
+                )
+
+        self.run_worker(_bg, thread=True)
         self.dismiss(None)
 
     def action_open_browser(self) -> None:
         pl = self._selected_playlist()
         if not pl:
             return
-        from .player_open import open_song_url
-        url = pl.get("url") or f"https://music.youtube.com/playlist?list={pl['playlist_id']}"
-        try:
-            open_song_url(url, "youtube_music_playlist", prefer_audio=True)
-            self.app.notify(f"Opened playlist '{pl.get('name') or pl['playlist_id']}' in YouTube Music")
-        except Exception as exc:
-            self.app.notify(f"Could not open browser: {exc}", severity="error")
+        self._load_playlist(str(pl["playlist_id"]))
 
     def action_delete_playlist(self) -> None:
         pl = self._selected_playlist()
@@ -1182,6 +1229,8 @@ class KaraokeTui(App):
         ("F", "toggle_focus", "Focus"),
         ("B", "browse_recordings", "Recordings"),
         ("T", "stats", "Stats"),
+        ("D", "ai_dj_chat", "AI DJ"),
+        ("v", "lyric_vibe", "Lyric Vibe"),
         ("question_mark", "help", "Keys"),
         # NOT priority: a priority app binding shadows every modal's own
         # escape, which stopped Stats and Help from closing. The
@@ -1352,6 +1401,7 @@ class KaraokeTui(App):
                 yield Button("▶ Open (Enter)", id="btn-browse-open", variant="primary")
                 yield Button("➕ Queue (a)", id="btn-browse-enqueue", variant="default")
                 yield Button("✨ Similar (M)", id="btn-browse-more", variant="default")
+                yield Button("🎤 Lyric Vibe (v)", id="btn-browse-vibe", variant="default")
                 yield Static(f"log: {self._log_level}", id="log-label")
                 yield Static("", id="browse-count")
         yield Footer()
@@ -3022,7 +3072,8 @@ class KaraokeTui(App):
                 if added:
                     log.info("Synced track '%s - %s' to remote YT Music playlist %s", artist, title, playlist_id)
 
-        self.run_worker(_bg, thread=True, exclusive=False)
+        if playlist_id.startswith(("PL", "VL", "RD", "OLAK5")):
+            self.run_worker(_bg, thread=True, exclusive=False)
 
     def _enable_ytmusic_queue_follow(self, playlist_id: str, count: int, unresolved: list, name: str = "") -> None:
         self._ytmusic_queue_follow = True
@@ -3568,6 +3619,41 @@ class KaraokeTui(App):
             pass          # broker down is not a reason to hide the rest
         self.push_screen(StatsScreen(stats_panels(lib, summary, status)))
 
+    def _get_current_or_selected_track_id(self) -> int | None:
+        if self._current_track_id is not None:
+            return self._current_track_id
+        if getattr(self, "_song", None) and self._song.get("track_id"):
+            try:
+                return int(self._song["track_id"])
+            except (ValueError, TypeError):
+                pass
+        if getattr(self, "_queue", None) and 0 <= getattr(self, "_queue_at", -1) < len(self._queue):
+            q_song = self._queue[self._queue_at]
+            if q_song and q_song.get("track_id"):
+                try:
+                    return int(q_song["track_id"])
+                except (ValueError, TypeError):
+                    pass
+        song = self._selected_song()
+        if song and song.get("track_id"):
+            try:
+                return int(song["track_id"])
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def action_ai_dj_chat(self, initial_prompt: Optional[str] = None) -> None:
+        """`D`: open the interactive AI DJ Chat booth."""
+        self.push_screen(DJChatScreen(
+            current_track_provider=self._get_current_or_selected_track_id,
+            current_track_id=self._get_current_or_selected_track_id(),
+            initial_prompt=initial_prompt,
+        ))
+
+    def action_lyric_vibe(self) -> None:
+        """`v`: show lyric sentiment vibe, emotional arc & vocal tips for the currently playing song."""
+        self.action_ai_dj_chat(initial_prompt="/vibe")
+
     def action_help(self) -> None:
         # get_key_display is the app's own formatter, so the help screen and
         # the Footer always agree on how a key is written.
@@ -4049,6 +4135,8 @@ class KaraokeTui(App):
             self.action_enqueue_selected()
         elif bid == "btn-browse-more":
             self.action_more_like_this()
+        elif bid == "btn-browse-vibe":
+            self.action_lyric_vibe()
 
     def action_seek_back(self) -> None:
         if self._det.is_active:
