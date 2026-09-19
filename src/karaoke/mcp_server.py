@@ -13,7 +13,12 @@ from typing import Any, Optional
 
 import uvicorn
 from mcp.server import MCPServer
+from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPASGIApp, StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Mount, Route
 
 from . import localcache, musictheory, playerctl, sentiment, visuals
 from .logger import log
@@ -554,24 +559,85 @@ def play_track(track_id: int, prefer_audio_only: bool = False) -> str:
         }, indent=2)
 
 
+class CombinedMCPApp:
+    """Dispatches requests between MCP Streamable HTTP, Server-Sent Events (SSE), and health checks.
+
+    Supports both legacy SSE clients (GET /sse -> event-stream) and Streamable HTTP clients
+    (POST /sse -> JSON-RPC, like Obot) on the same endpoint without 405 Method Not Allowed.
+    """
+
+    def __init__(
+        self,
+        sse_transport: SseServerTransport,
+        session_mgr: StreamableHTTPSessionManager,
+        lowlevel_server: Any,
+    ) -> None:
+        self.sse = sse_transport
+        self.streamable = StreamableHTTPASGIApp(session_mgr)
+        self.lowlevel_server = lowlevel_server
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            method = scope.get("method", "GET")
+            if method == "HEAD":
+                response = Response(status_code=200)
+                await response(scope, receive, send)
+                return
+            if method == "GET":
+                headers = dict(scope.get("headers", []))
+                accept = headers.get(b"accept", b"").decode("utf-8", errors="ignore")
+                has_streamable_session = b"mcp-session-id" in headers
+                if "text/event-stream" in accept and not has_streamable_session:
+                    async with self.sse.connect_sse(scope, receive, send) as streams:
+                        await self.lowlevel_server.run(
+                            streams[0],
+                            streams[1],
+                            self.lowlevel_server.create_initialization_options(),
+                        )
+                    return
+        await self.streamable(scope, receive, send)
+
+
+def create_asgi_app(server: MCPServer = dj_mcp) -> Starlette:
+    """Build the unified Starlette ASGI application supporting SSE and Streamable HTTP."""
+    security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+        allowed_hosts=["*"],
+        allowed_origins=["*"],
+    )
+    sse = SseServerTransport("/messages/", security_settings=security)
+    session_manager = StreamableHTTPSessionManager(
+        app=server._lowlevel_server,
+        security_settings=security,
+    )
+    combined = CombinedMCPApp(sse, session_manager, server._lowlevel_server)
+
+    routes = [
+        Route("/", endpoint=lambda r: JSONResponse({"status": "ok", "server": "karaoke-dj"})),
+        Route("/health", endpoint=lambda r: JSONResponse({"status": "ok"})),
+        Route("/sse", endpoint=combined),
+        Route("/sse/", endpoint=combined),
+        Route("/mcp", endpoint=combined),
+        Route("/mcp/", endpoint=combined),
+        Mount("/messages", app=sse.handle_post_message),
+    ]
+
+    return Starlette(routes=routes, lifespan=lambda a: session_manager.run())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Karaoke AI DJ Model Context Protocol (MCP) Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8888, help="Port to listen on for SSE (default: 8888)")
-    parser.add_argument("--stdio", action="store_true", help="Run in stdio mode instead of HTTP SSE")
+    parser.add_argument("--port", type=int, default=8888, help="Port to listen on (default: 8888)")
+    parser.add_argument("--stdio", action="store_true", help="Run in stdio mode instead of HTTP")
     args = parser.parse_args()
 
     if args.stdio:
         import asyncio
         asyncio.run(dj_mcp.run_stdio_async())
     else:
-        app = dj_mcp.sse_app(
-            transport_security=TransportSecuritySettings(
-                enable_dns_rebinding_protection=False,
-                allowed_hosts=["*"],
-            )
-        )
-        print(f"Starting Karaoke DJ MCP Server on http://{args.host}:{args.port}/sse ...")
+        app = create_asgi_app(dj_mcp)
+        print(f"Starting Karaoke DJ MCP Server on http://{args.host}:{args.port} (SSE: /sse, Streamable: /sse & /mcp) ...")
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

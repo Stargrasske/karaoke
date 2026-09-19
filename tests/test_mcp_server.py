@@ -177,3 +177,35 @@ def test_play_track_unknown_track(launcher):
 
     assert "error" in data
     assert calls == []
+
+
+def test_create_asgi_app_endpoints():
+    """Verify create_asgi_app handles HEAD /sse, POST /sse (streamable HTTP), and /health."""
+    from starlette.testclient import TestClient
+
+    app = mcp_server.create_asgi_app()
+    with TestClient(app) as client:
+        # 1. Healthcheck
+        r_health = client.get("/health")
+        assert r_health.status_code == 200
+        assert r_health.json() == {"status": "ok"}
+
+        # 2. HEAD /sse (systemd readiness check)
+        r_head = client.head("/sse")
+        assert r_head.status_code == 200
+
+        # 3. POST /sse (Streamable HTTP initialize sent by Obot)
+        init_payload = {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "obot-test", "version": "1.0"},
+            },
+        }
+        r_post = client.post("/sse", json=init_payload)
+        assert r_post.status_code == 200
+        assert "capabilities" in r_post.text
+
