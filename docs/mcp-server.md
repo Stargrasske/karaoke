@@ -8,7 +8,7 @@ The Karaoke AI DJ MCP Server bridges your 18,000+ local track library, harmonic 
 flowchart LR
     subgraph Host[Host Desktop (Linux / ROCm)]
         Ollama[Ollama\nqwen3:latest / ROCm 890M\n:11434]
-        MCP[karaoke-mcp\nMCP Server (SSE)\n:8888]
+        MCP[karaoke-mcp\nSSE + Streamable HTTP\n:8888]
         PG[(PostgreSQL\nkaraoke DB\n18k tracks + Camelot)]
         Player[Desktop Playback\nSpotify / Chromium / TUI]
     end
@@ -31,6 +31,27 @@ flowchart LR
 Obot rejects any MCP server URL that resolves to a private IP, so it cannot
 reach `:8888` directly. The `obot tunnel` process on the host opens an
 authenticated outbound connection instead, and the gateway routes through it.
+
+## Endpoints
+
+One port serves two MCP transports, because clients disagree about which to
+use: Claude Code opens a long-lived SSE stream, while Obot posts JSON-RPC
+(Streamable HTTP). Serving only SSE answered Obot's POSTs with 405.
+
+| Path | Method | Behaviour |
+|---|---|---|
+| `/sse`, `/mcp` | `GET` with `Accept: text/event-stream` | Legacy SSE stream; replies with an `event: endpoint` naming the session's POST-back URL |
+| `/sse`, `/mcp` | `POST` | Streamable HTTP JSON-RPC |
+| `/sse`, `/mcp` | `HEAD` | `200`, for the unit's `ExecStartPost` readiness probe |
+| `/messages/` | `POST` | Where an SSE session posts its requests |
+| `/health` | `GET` | `{"status": "ok"}` |
+| `/` | `GET` | `{"status": "ok", "server": "karaoke-dj"}` |
+
+A `GET` is routed to SSE only when it asks for `text/event-stream` and carries
+no `mcp-session-id` header; anything else falls through to Streamable HTTP. A
+plain `curl http://localhost:8888/sse` therefore returns `400`, not because the
+server is unhealthy but because curl sends no `Accept` header — use `-H "Accept:
+text/event-stream"`, or just hit `/health`.
 
 ## Available MCP Tools
 
@@ -73,6 +94,11 @@ make mcp                               # Run manually in foreground
    * **Exact URL**: `http://127.0.0.1:8888/sse`
    * **Tunnel**: select the tunnel from step 3. Without this the save fails
      validation.
+
+   Obot reaches the server as `POST /sse`, which is why the Streamable HTTP
+   transport has to be served there. Confirm traffic is flowing with
+   `journalctl --user -u karaoke-obot-tunnel -f`, which logs one line per
+   proxied request.
 
 ## Talking to the DJ
 
