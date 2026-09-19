@@ -62,6 +62,8 @@ Pressing `D` opens the interactive **AI DJ Booth**:
 - **Live Player Sync & Follow**: Pressing `[🎧 Follow DJ]` or running `/follow-dj` loads `dj-list` directly into the live player queue and tracks playback changes.
 - **Commands**:
   - `/suggest [strategy]`: Recommend next tracks (`harmonic`, `energy_up`, `cool_down`, `acoustic`).
+    Songs already in `dj-list` are skipped, so repeated calls keep offering new
+    material rather than what you just queued.
   - `1`..`4` or `/queue <#|query|track_id>`: Add to `dj-list` and player queue.
   - `/queue all` (or `all`): Add all active suggestions.
   - `/dj-list` (or `/playlist`): View current tracks in `dj-list`.

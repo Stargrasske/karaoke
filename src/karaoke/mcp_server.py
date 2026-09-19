@@ -251,6 +251,7 @@ def suggest_next_tracks(
     title: Optional[str] = None,
     strategy: str = "harmonic",
     limit: int = 5,
+    exclude_playlist: str = "dj-list",
 ) -> str:
     """Suggest the best next songs to follow a given track for smooth DJ mixing or energy flow.
 
@@ -258,6 +259,9 @@ def suggest_next_tracks(
         track_id: The ID of the seed track (optional if artist & title provided).
         artist: Artist name of the current track (used if track_id is omitted).
         title: Title of the current track (used if track_id is omitted).
+        exclude_playlist: Skip songs already in this playlist, so repeated calls
+            keep offering fresh material. Defaults to the DJ list; pass an empty
+            string to allow songs already queued.
         strategy:
             - 'harmonic': Camelot wheel adjacent keys (+/- 1 hour or relative major/minor) + matching BPM (+/- 8%).
             - 'energy_up': Step up the party tempo (+5 to +20 BPM) and higher energy score.
@@ -315,9 +319,27 @@ def suggest_next_tracks(
 
         candidates = []
 
+        # Songs already queued are not suggestions. Without this a DJ working
+        # through /suggest keeps being handed the same tracks they just added,
+        # and `/queue all` would append duplicates. Read locally: this runs on
+        # every suggestion, so it must not depend on YouTube Music being
+        # reachable.
+        excluded: set[int] = set()
+        if exclude_playlist:
+            try:
+                excluded = {
+                    t["track_id"]
+                    for t in localcache.get_saved_playlist_tracks(exclude_playlist, conn=conn)
+                    if t.get("track_id")
+                }
+            except Exception as exc:
+                log.warning("Could not read playlist %s for exclusion: %s", exclude_playlist, exc)
+
         if strategy == "acoustic":
             from . import queue_suggest
-            suggestions = queue_suggest.suggest_for_track(seed_id, limit=limit)
+            # Over-fetch so filtering cannot leave us short of `limit`.
+            raw = queue_suggest.suggest_for_track(seed_id, limit=limit + len(excluded))
+            suggestions = [s for s in raw if s.track_id not in excluded][:limit]
             return json.dumps({
                 "seed": {
                     "track_id": seed_id,
@@ -388,6 +410,9 @@ def suggest_next_tracks(
         pool = cur.fetchall()
 
         for row in pool:
+            if row["track_id"] in excluded:
+                continue
+
             k = musictheory.parse_key(row["detected_key"])
             cam = k.camelot if k else "?"
 
@@ -685,6 +710,23 @@ def add_to_dj_playlist(
         # Ensure playlist exists locally
         localcache.ensure_dj_playlist(playlist_id=yt_pid, conn=conn)
 
+        # Adding a song twice is a no-op, not an error: a DJ re-queueing a
+        # track should not get a duplicate. Checked before the remote sync so
+        # a repeat add costs no YouTube Music call either.
+        for existing in localcache.get_saved_playlist_tracks(yt_pid, conn=conn):
+            if existing.get("track_id") == row["track_id"]:
+                return json.dumps({
+                    "ok": True,
+                    "already_present": True,
+                    "playlist_id": yt_pid,
+                    "position": existing.get("position"),
+                    "track": {
+                        "track_id": row["track_id"],
+                        "artist": row["artist"],
+                        "title": row["title"],
+                    },
+                    "message": f"{row['artist']} — {row['title']} is already in the playlist.",
+                }, indent=2)
 
         url = row["url"] or ""
         vid = localcache.extract_youtube_id(url) if url else ""

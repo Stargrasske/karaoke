@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 import pytest
 
 from karaoke import mcp_server, player_open
@@ -237,3 +238,58 @@ def test_dj_playlist_tools(playable_track):
     r_get2 = json.loads(mcp_server.get_dj_playlist())
     assert r_get2["track_count"] == 0
     assert r_get2["tracks"] == []
+
+
+
+def test_add_to_dj_playlist_is_idempotent(playable_track):
+    """Re-adding a track reports it as present rather than duplicating it."""
+    mcp_server.clear_dj_playlist()
+
+    first = json.loads(mcp_server.add_to_dj_playlist(track_id=playable_track))
+    assert first["ok"] is True
+    assert not first.get("already_present")
+
+    second = json.loads(mcp_server.add_to_dj_playlist(track_id=playable_track))
+    assert second["ok"] is True
+    assert second["already_present"] is True
+
+    listing = json.loads(mcp_server.get_dj_playlist())
+    assert listing["track_count"] == 1
+
+
+def test_suggest_next_tracks_excludes_playlist_members(playable_track, monkeypatch):
+    """A song already in the DJ list is never offered as the next track."""
+    # Two analysed tracks that suggest_next_tracks can actually return.
+    from karaoke import localcache
+
+    with localcache.connect() as conn:
+        cur = conn.cursor()
+        for tid, title, bpm, key in (
+            (5001, "Seed Song", 120.0, "A minor"),
+            (5002, "Queued Song", 121.0, "A minor"),
+            (5003, "Fresh Song", 122.0, "A minor"),
+        ):
+            cur.execute(
+                "INSERT INTO tracks (track_id, artist, title, album, duration, play_count)"
+                " VALUES (%s, %s, %s, %s, %s, %s)",
+                (tid, "Test Artist", title, "", 180.0, 0),
+            )
+            cur.execute(
+                "INSERT INTO track_analysis (track_id, detected_key, bpm, energy, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s)",
+                (tid, key, bpm, 0.5, time.time()),
+            )
+
+    mcp_server.clear_dj_playlist()
+    mcp_server.add_to_dj_playlist(track_id=5002)
+
+    data = json.loads(mcp_server.suggest_next_tracks(track_id=5001, limit=10))
+    returned = [s["track_id"] for s in data["suggestions"]]
+    assert 5002 not in returned, "queued song must not be suggested"
+    assert 5003 in returned, "unqueued song should still be offered"
+
+    # Opting out restores the old behaviour.
+    allowed = json.loads(
+        mcp_server.suggest_next_tracks(track_id=5001, limit=10, exclude_playlist="")
+    )
+    assert 5002 in [s["track_id"] for s in allowed["suggestions"]]

@@ -59,13 +59,24 @@ text/event-stream"`, or just hit `/health`.
 |---|---|---|
 | `search_songs` | Search tracks in the library with Camelot codes, BPM, energy, and lyrics | `query`, `genre`, `key`, `min_bpm`, `max_bpm`, `only_synced_lyrics` |
 | `get_now_playing` | Inspect currently playing audio on Spotify/Chromium/VLC/MPRIS | — |
-| `suggest_next_tracks` | Harmonic transitions (Camelot wheel) or energy-up / cool-down | `track_id`, `strategy` (`harmonic`, `energy_up`, `cool_down`, `acoustic`) |
+| `suggest_next_tracks` | Harmonic transitions (Camelot wheel) or energy-up / cool-down, skipping songs already queued | `track_id`, `strategy` (`harmonic`, `energy_up`, `cool_down`, `acoustic`), `exclude_playlist` |
 | `analyze_lyric_vibe` | Lyric mood arc, sentiment breakdown, and singer delivery tips | `track_id` |
 | `get_dj_stats` | Play counts, top artists, crowd favorites, and discovery history | — |
 | `play_track` | Trigger playback via the host karaoke player | `track_id`, `prefer_audio_only` |
-| `add_to_dj_playlist` | Add track to the persistent `dj-list` playlist by ID or title/artist | `track_id`, `artist`, `title`, `playlist_id` |
+| `add_to_dj_playlist` | Add track to the persistent `dj-list` playlist by ID or title/artist; re-adding is a no-op | `track_id`, `artist`, `title`, `playlist_id` |
 | `get_dj_playlist` | Retrieve tracks, positions, and metadata from the DJ playlist | `playlist_id` (default `dj-list`) |
 | `clear_dj_playlist` | Empty all tracks from the DJ playlist | `playlist_id` (default `dj-list`) |
+
+### The set never repeats itself
+
+`suggest_next_tracks` filters out anything already in the DJ list, so working
+through `/suggest` keeps producing fresh material instead of re-offering songs
+you just queued. Pass `exclude_playlist=""` to lift the filter, or name another
+saved playlist to exclude that one instead.
+
+`add_to_dj_playlist` is idempotent to match: re-adding a queued song returns
+`already_present` rather than a duplicate, and short-circuits before the
+YouTube Music call, so a repeat add costs no API request.
 
 ## Service Management
 
