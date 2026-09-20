@@ -142,13 +142,19 @@ def _normalise(vector) -> list[float]:
     return [float(x) for x in (v / norm if norm else v)]
 
 
-def _body_windows(y) -> list:
+def _body_windows(y, max_windows: int = MAX_WINDOWS, *, full: bool = False) -> list:
     """Even windows across the track's body, skipping intro and outro.
 
     Separated out so the windowing can be tested and compared without loading
     a model: what a vector means depends entirely on which audio went into it,
     so two vectors built under different windowing are not comparable and the
     whole index has to be rebuilt when this changes.
+
+    ``full`` tiles the body end to end instead of sampling it, so nothing is
+    skipped. Six ten-second windows cover about a quarter of a four-minute
+    track, which is ample for timbre -- the thing CLAP describes -- but a
+    caller wanting every second can ask. Cost scales with the window count,
+    since each one is a forward pass.
     """
     total = len(y)
     span = SAMPLE_RATE * WINDOW_SECONDS
@@ -163,17 +169,27 @@ def _body_windows(y) -> list:
         # Trimming left less than one window; the edges are all there is.
         body = y
 
-    step = max(1, len(body) // MAX_WINDOWS)
-    windows = [body[i:i + span] for i in range(0, len(body), step)][:MAX_WINDOWS]
+    if full:
+        windows = [body[i:i + span] for i in range(0, len(body), span)]
+    else:
+        count = max(1, max_windows)
+        step = max(1, len(body) // count)
+        windows = [body[i:i + span] for i in range(0, len(body), step)][:count]
     return [w for w in windows if len(w) >= SAMPLE_RATE]
 
 
-def embed_audio(audio_path: str) -> Optional[list[float]]:
+def embed_audio(audio_path: str, *, max_windows: int = MAX_WINDOWS,
+                full: bool = False) -> Optional[list[float]]:
     """Embed a track, or None if it cannot be read.
 
     Windows are mean-pooled: a single ten-second slice describes a moment
     rather than a song, and a track that changes character would be
     represented by whichever part happened to be sampled.
+
+    ``max_windows`` and ``full`` control how much of the track is sampled.
+    Note that changing either produces vectors that are not comparable with
+    those already indexed, so it is a decision for a whole rebuild rather than
+    one track.
     """
     if not available():
         log.debug("CLAP unavailable; no audio embedding")
@@ -195,7 +211,7 @@ def embed_audio(audio_path: str) -> Optional[list[float]]:
         if y is None or len(y) < SAMPLE_RATE:
             return None
 
-        windows = _body_windows(y)
+        windows = _body_windows(y, max_windows, full=full)
         if not windows:
             return None
 
