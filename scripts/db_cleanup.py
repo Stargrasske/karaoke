@@ -4,11 +4,10 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import sqlite3
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
-import time
-from typing import Optional
+from typing import Any, Optional
 
 from karaoke.config import settings
 from karaoke.lyrics import clean_title
@@ -86,7 +85,7 @@ def duration_relation(d1: Optional[float], d2: Optional[float]) -> str:
     return "same" if abs(float(d1) - float(d2)) <= DURATION_TOLERANCE_S else "different"
 
 
-def is_duplicate(t1: sqlite3.Row, t2: sqlite3.Row) -> bool:
+def is_duplicate(t1: dict[str, Any], t2: dict[str, Any]) -> bool:
     """Decide whether two tracks represent the same song and should be merged.
 
     Rule (per user intent): same/compatible artist AND a matching title, where a
@@ -147,31 +146,31 @@ def are_artists_compatible(art1: str, art2: str) -> bool:
     return False
 
 
-def merge_tracks(track_id_src: int, track_id_dest: int, conn: sqlite3.Connection) -> None:
+def merge_tracks(track_id_src: int, track_id_dest: int, conn) -> None:
     """Merge Track A (src) into Track B (dest)."""
     cur = conn.cursor()
 
     # Move sources (deduplicating URLs)
-    cur.execute("SELECT url, kind, player_name FROM sources WHERE track_id = ?", (track_id_src,))
+    cur.execute("SELECT url, kind, player_name FROM sources WHERE track_id = %s", (track_id_src,))
     src_sources = cur.fetchall()
     for row in src_sources:
         url, kind, player_name = row["url"], row["kind"], row["player_name"]
         # Check if destination already has this URL
-        cur.execute("SELECT source_id FROM sources WHERE track_id = ? AND url = ?", (track_id_dest, url))
+        cur.execute("SELECT source_id FROM sources WHERE track_id = %s AND url = %s", (track_id_dest, url))
         if cur.fetchone():
             # Delete duplicate from source track
-            cur.execute("DELETE FROM sources WHERE track_id = ? AND url = ?", (track_id_src, url))
+            cur.execute("DELETE FROM sources WHERE track_id = %s AND url = %s", (track_id_src, url))
         else:
             # Move source
-            cur.execute("UPDATE sources SET track_id = ? WHERE track_id = ? AND url = ?", (track_id_dest, track_id_src, url))
+            cur.execute("UPDATE sources SET track_id = %s WHERE track_id = %s AND url = %s", (track_id_dest, track_id_src, url))
 
     # Move lyrics (keeping the better ones)
-    cur.execute("SELECT lyric_id, kind, source, synced_lyrics, plain_lyrics FROM lyrics WHERE track_id = ?", (track_id_src,))
+    cur.execute("SELECT lyric_id, kind, source, synced_lyrics, plain_lyrics FROM lyrics WHERE track_id = %s", (track_id_src,))
     src_lyrics = cur.fetchall()
     for row in src_lyrics:
         ly_id, kind, source, synced, plain = row["lyric_id"], row["kind"], row["source"], row["synced_lyrics"], row["plain_lyrics"]
         # Check if destination already has lyrics of this kind
-        cur.execute("SELECT lyric_id, synced_lyrics, plain_lyrics FROM lyrics WHERE track_id = ? AND kind = ?", (track_id_dest, kind))
+        cur.execute("SELECT lyric_id, synced_lyrics, plain_lyrics FROM lyrics WHERE track_id = %s AND kind = %s", (track_id_dest, kind))
         dest_ly = cur.fetchone()
         if dest_ly:
             # Determine which is better (synced over plain)
@@ -179,19 +178,19 @@ def merge_tracks(track_id_src: int, track_id_dest: int, conn: sqlite3.Connection
             src_has_synced = bool(synced)
             if src_has_synced and not dest_has_synced:
                 # Replace dest lyrics with src lyrics
-                cur.execute("UPDATE lyrics SET source = ?, synced_lyrics = ?, plain_lyrics = ? WHERE lyric_id = ?", 
+                cur.execute("UPDATE lyrics SET source = %s, synced_lyrics = %s, plain_lyrics = %s WHERE lyric_id = %s", 
                             (source, synced, plain, dest_ly["lyric_id"]))
             # Delete the source lyrics row
-            cur.execute("DELETE FROM lyrics WHERE lyric_id = ?", (ly_id,))
+            cur.execute("DELETE FROM lyrics WHERE lyric_id = %s", (ly_id,))
         else:
             # Move lyrics
-            cur.execute("UPDATE lyrics SET track_id = ? WHERE lyric_id = ?", (track_id_dest, ly_id))
+            cur.execute("UPDATE lyrics SET track_id = %s WHERE lyric_id = %s", (track_id_dest, ly_id))
 
     # Move track analysis (keeping the more complete one)
-    cur.execute("SELECT * FROM track_analysis WHERE track_id = ?", (track_id_src,))
+    cur.execute("SELECT * FROM track_analysis WHERE track_id = %s", (track_id_src,))
     src_analysis = cur.fetchone()
     if src_analysis:
-        cur.execute("SELECT * FROM track_analysis WHERE track_id = ?", (track_id_dest,))
+        cur.execute("SELECT * FROM track_analysis WHERE track_id = %s", (track_id_dest,))
         dest_analysis = cur.fetchone()
         if dest_analysis:
             # Keep whichever has BPM or more fields populated
@@ -202,10 +201,10 @@ def merge_tracks(track_id_src: int, track_id_dest: int, conn: sqlite3.Connection
                 cur.execute(
                     """
                     UPDATE track_analysis 
-                    SET detected_key=?, key_confidence=?, key_agreement=?, reference_key=?, reference_src=?,
-                        resolved_key=?, key_relation=?, bpm=?, method=?, analyzer_version=?, updated_at=?,
-                        energy=?, brightness=?
-                    WHERE track_id=?
+                    SET detected_key=%s, key_confidence=%s, key_agreement=%s, reference_key=%s, reference_src=%s,
+                        resolved_key=%s, key_relation=%s, bpm=%s, method=%s, analyzer_version=%s, updated_at=%s,
+                        energy=%s, brightness=%s
+                    WHERE track_id=%s
                     """,
                     (src_analysis["detected_key"], src_analysis["key_confidence"], src_analysis["key_agreement"],
                      src_analysis["reference_key"], src_analysis["reference_src"], src_analysis["resolved_key"],
@@ -213,15 +212,15 @@ def merge_tracks(track_id_src: int, track_id_dest: int, conn: sqlite3.Connection
                      src_analysis["analyzer_version"], src_analysis["updated_at"], src_analysis["energy"],
                      src_analysis["brightness"], track_id_dest)
                 )
-            cur.execute("DELETE FROM track_analysis WHERE track_id = ?", (track_id_src,))
+            cur.execute("DELETE FROM track_analysis WHERE track_id = %s", (track_id_src,))
         else:
-            cur.execute("UPDATE track_analysis SET track_id = ? WHERE track_id = ?", (track_id_dest, track_id_src))
+            cur.execute("UPDATE track_analysis SET track_id = %s WHERE track_id = %s", (track_id_dest, track_id_src))
 
     # Delete the source track row from tracks
-    cur.execute("DELETE FROM tracks WHERE track_id = ?", (track_id_src,))
+    cur.execute("DELETE FROM tracks WHERE track_id = %s", (track_id_src,))
 
 
-def run_deduplication(conn: sqlite3.Connection, dry_run: bool = False) -> int:
+def run_deduplication(conn, dry_run: bool = False) -> int:
     """Scan and merge duplicate tracks representing the same song.
 
     Two tracks are duplicates when the artist is compatible and the title
@@ -273,13 +272,13 @@ def run_deduplication(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     return merged_count
 
 
-def _choose_canonical(t1: sqlite3.Row, t2: sqlite3.Row, cur: sqlite3.Cursor):
+def _choose_canonical(t1: dict, t2: dict, cur):
     """Return (dest, src): the track to keep and the one to merge away."""
     def score(tid: int) -> tuple[int, int]:
         has_lyrics = bool(cur.execute(
-            "SELECT 1 FROM lyrics WHERE track_id = ? AND COALESCE(synced_lyrics,'') || COALESCE(plain_lyrics,'') != ''",
+            "SELECT 1 FROM lyrics WHERE track_id = %s AND COALESCE(synced_lyrics,'') || COALESCE(plain_lyrics,'') != ''",
             (tid,)).fetchone())
-        nsrc = cur.execute("SELECT count(*) FROM sources WHERE track_id = ?", (tid,)).fetchone()[0]
+        nsrc = cur.execute("SELECT count(*) as cnt FROM sources WHERE track_id = %s", (tid,)).fetchone()["cnt"]
         return (1 if has_lyrics else 0, nsrc)
 
     s1, s2 = score(t1["track_id"]), score(t2["track_id"])
@@ -289,7 +288,7 @@ def _choose_canonical(t1: sqlite3.Row, t2: sqlite3.Row, cur: sqlite3.Cursor):
     return (t1, t2) if len(t1["artist"]) >= len(t2["artist"]) else (t2, t1)
 
 
-def run_source_healing(conn: sqlite3.Connection, limit: int = 50) -> None:
+def run_source_healing(conn, limit: int = 50) -> None:
     """Find source URLs for tracks with lyrics that lack any source mapping."""
     print("\n=== Step 2: Auto-filling Source URLs for Orphan Tracks ===")
     cur = conn.cursor()
@@ -311,9 +310,9 @@ def run_source_healing(conn: sqlite3.Connection, limit: int = 50) -> None:
         if title.lower() in ("analyse", "tui", "test", "demo"):
             # Garbage cleanup: delete them!
             print(f"Pruning mock/test track ID {r['track_id']} ('{artist}' - '{title}')")
-            cur.execute("DELETE FROM tracks WHERE track_id = ?", (r["track_id"],))
-            cur.execute("DELETE FROM lyrics WHERE track_id = ?", (r["track_id"],))
-            cur.execute("DELETE FROM track_analysis WHERE track_id = ?", (r["track_id"],))
+            cur.execute("DELETE FROM tracks WHERE track_id = %s", (r["track_id"],))
+            cur.execute("DELETE FROM lyrics WHERE track_id = %s", (r["track_id"],))
+            cur.execute("DELETE FROM track_analysis WHERE track_id = %s", (r["track_id"],))
             continue
         eligible.append(r)
 
@@ -330,7 +329,7 @@ def run_source_healing(conn: sqlite3.Connection, limit: int = 50) -> None:
                 url = results[0]["url"]
                 # Add to sources
                 cur.execute(
-                    "INSERT INTO sources (track_id, kind, url, player_name) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO sources (track_id, kind, url, player_name) VALUES (%s, %s, %s, %s)",
                     (r["track_id"], "youtube", url, "browser")
                 )
                 print(f"  -> Found URL: {url}")
@@ -344,7 +343,7 @@ def run_source_healing(conn: sqlite3.Connection, limit: int = 50) -> None:
     print(f"Source URL auto-fill complete. Healed {healed} track(s).")
 
 
-def run_orphan_cache_healing(conn: sqlite3.Connection) -> None:
+def run_orphan_cache_healing(conn) -> None:
     """Find downloaded cache files that are missing track/source mappings, heal them, and analyze."""
     print("\n=== Step 3: Self-Healing Orphan Downloaded Cache Files ===")
     yt_dir = Path(settings.youtube_dir)
@@ -384,19 +383,20 @@ def run_orphan_cache_healing(conn: sqlite3.Connection) -> None:
             # Check if this track already exists in tracks table
             track_id = find_track_id_by_artist_title(artist_clean, title_clean, conn)
             if not track_id:
-                # Create a new track entry
+                # Create a new track entry and retrieve the auto-generated ID
                 cur.execute(
-                    "INSERT INTO tracks (artist, title, duration) VALUES (?, ?, ?)",
+                    "INSERT INTO tracks (artist, title, duration) VALUES (%s, %s, %s) RETURNING track_id",
                     (artist_clean, title_clean, duration)
                 )
-                track_id = cur.lastrowid
+                row = cur.fetchone()
+                track_id = row["track_id"]
                 print(f"  -> Created new track record (ID {track_id})")
             else:
                 print(f"  -> Reusing existing track record (ID {track_id})")
 
             # Insert source mapping
             cur.execute(
-                "INSERT INTO sources (track_id, kind, url, player_name) VALUES (?, 'youtube', ?, 'browser')",
+                "INSERT INTO sources (track_id, kind, url, player_name) VALUES (%s, 'youtube', %s, 'browser')",
                 (track_id, url)
             )
             print("  -> Registered source mapping in DB")
@@ -437,15 +437,15 @@ def run_orphan_cache_healing(conn: sqlite3.Connection) -> None:
     print(f"Orphan cache healing complete. Recovered {healed_count} file(s).")
 
 
-def find_track_id_by_artist_title(artist: str, title: str, conn: sqlite3.Connection) -> Optional[int]:
+def find_track_id_by_artist_title(artist: str, title: str, conn) -> Optional[int]:
     """Helper to lookup track_id case-insensitively."""
     cur = conn.cursor()
     cur.execute(
-        "SELECT track_id FROM tracks WHERE lower(artist) = lower(?) AND lower(title) = lower(?)",
+        "SELECT track_id FROM tracks WHERE lower(artist) = lower(%s) AND lower(title) = lower(%s)",
         (artist.strip(), title.strip())
     )
     row = cur.fetchone()
-    return row[0] if row else None
+    return row["track_id"] if row else None
 
 
 def main() -> None:
@@ -456,10 +456,8 @@ def main() -> None:
                         help="Only run deduplication (skip source/cache healing).")
     args = parser.parse_args()
 
-    db_path = os.path.expanduser(settings.local_db)
-    print(f"Using database: {db_path}")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    print("Using database: PostgreSQL (via localcache.connect())")
+    conn = localcache.connect()
     track_analysis.ensure_schema(conn)
 
     try:
@@ -467,14 +465,16 @@ def main() -> None:
             # Read-only: report duplicates, touch nothing.
             run_deduplication(conn, dry_run=True)
             return
-        with conn:
-            # 1. Deduplication
-            run_deduplication(conn)
-            if not args.dedup_only:
-                # 2. Source healing
-                run_source_healing(conn, limit=30)  # heal up to 30 tracks per run
-                # 3. Orphan cache healing
-                run_orphan_cache_healing(conn)
+        # 1. Deduplication
+        run_deduplication(conn)
+        conn.commit()
+        if not args.dedup_only:
+            # 2. Source healing
+            run_source_healing(conn, limit=30)  # heal up to 30 tracks per run
+            conn.commit()
+            # 3. Orphan cache healing
+            run_orphan_cache_healing(conn)
+            conn.commit()
     finally:
         conn.close()
 

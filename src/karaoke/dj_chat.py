@@ -62,6 +62,12 @@ class DJChatSession:
         self.last_candidates: list[dict[str, Any]] = []
         self.on_tracks_queued: Optional[Any] = None
         self.follow_dj_handler: Optional[Any] = None
+        # Where `/browse more` resumes from, and under which filters.
+        self._browse_offset: int = 0
+        self._browse_filters: dict[str, Any] = {}
+
+    #: Rows per /browse page. Small enough to read in a chat pane.
+    _BROWSE_PAGE = 8
 
     def ask(self, user_prompt: str) -> str:
         """Process user input, execute tools if needed, and query Ollama or return DJ response."""
@@ -94,6 +100,18 @@ class DJChatSession:
             parts = user_prompt.strip().split(maxsplit=1)
             arg = parts[1] if len(parts) > 1 else ""
             return self.cmd_queue(arg)
+
+        if p_lower.startswith("/browse") or p_lower in ("browse", "library"):
+            parts = user_prompt.strip().split(maxsplit=1)
+            return self.cmd_browse(parts[1] if len(parts) > 1 else "")
+
+        if p_lower in ("/playlists", "playlists"):
+            return self.cmd_playlists()
+
+        # Bare /playlist keeps meaning the DJ list, which is what it has always
+        # done; with an argument it opens a named saved playlist instead.
+        if p_lower.startswith("/playlist ") or p_lower.startswith("playlist "):
+            return self.cmd_open_playlist(user_prompt.strip().split(maxsplit=1)[1])
 
         if p_lower in ("/dj-list", "/playlist", "/list", "dj-list", "playlist", "list"):
             return self.cmd_dj_list()
@@ -160,6 +178,8 @@ class DJChatSession:
                 "• `/suggest [harmonic|energy_up|cool_down|acoustic]` — Next song recommendations\n"
                 "• `1`, `2`, `3`, `4` or `/queue <#>` — Add suggestion to playlist & player queue\n"
                 "• `/queue all` (or `all`) — Add all suggestions to 'dj-list'\n"
+                "• `/browse [genre=rock bpm=120-140 key=8A synced=yes]` — Page the library (`/browse more`)\n"
+                "• `/playlists` — List saved playlists; `/playlist <name>` opens one\n"
                 "• `/dj-list` (or `/playlist`) — View tracks currently in the DJ playlist\n"
                 "• `/follow-dj` — Follow & load the DJ playlist in the active player\n"
                 "• `/clear-dj` — Clear all songs from 'dj-list'\n"
@@ -518,6 +538,146 @@ class DJChatSession:
         lines.append(
             f"\n👉 Type **1**–**{len(rows)}** to queue, or `all` for the whole set."
         )
+        return "\n".join(lines)
+
+    # Filter tokens /browse understands, as `name=value`.
+    _BROWSE_FILTERS = ("genre", "key", "bpm", "synced", "q")
+
+    def _parse_browse(self, arg: str) -> tuple[dict[str, Any], str]:
+        """Split `genre=rock bpm=120-140` into search_songs kwargs.
+
+        Anything that is not a recognised `name=value` token is treated as
+        free text, so `/browse bowie` still does the obvious thing.
+        """
+        kwargs: dict[str, Any] = {}
+        free: list[str] = []
+        for token in (arg or "").split():
+            name, _, value = token.partition("=")
+            name = name.lower()
+            if not value or name not in self._BROWSE_FILTERS:
+                free.append(token)
+                continue
+            if name == "genre":
+                kwargs["genre"] = value
+            elif name == "key":
+                kwargs["key"] = value
+            elif name == "q":
+                free.append(value)
+            elif name == "synced":
+                kwargs["only_synced_lyrics"] = value.lower() in ("1", "true", "yes", "y")
+            elif name == "bpm":
+                lo, _, hi = value.partition("-")
+                try:
+                    if lo:
+                        kwargs["min_bpm"] = float(lo)
+                    if hi:
+                        kwargs["max_bpm"] = float(hi)
+                except ValueError:
+                    free.append(token)
+        query = " ".join(free)
+        if query:
+            kwargs["query"] = query
+        return kwargs, query
+
+    def cmd_browse(self, arg: str = "") -> str:
+        """Page through the library with filters, like the TUI's `H` overlay."""
+        arg = (arg or "").strip()
+
+        # `more`/`next` continues the previous browse rather than restarting.
+        if arg.lower() in ("more", "next", "+"):
+            if not self._browse_filters and self._browse_offset == 0:
+                return "📚 Nothing to continue. Start with `/browse` or `/browse genre=rock`."
+            self._browse_offset += self._BROWSE_PAGE
+            kwargs = dict(self._browse_filters)
+        else:
+            kwargs, _ = self._parse_browse(arg)
+            self._browse_filters = dict(kwargs)
+            self._browse_offset = 0
+
+        data = json.loads(mcp_server.search_songs(
+            limit=self._BROWSE_PAGE, offset=self._browse_offset, **kwargs
+        ))
+        tracks = data.get("tracks", [])
+        self.last_candidates = list(tracks)
+        self.last_suggestions = list(tracks)
+
+        shown = ", ".join(f"{k}={v}" for k, v in sorted(kwargs.items())) or "whole library"
+        if not tracks:
+            if self._browse_offset:
+                return f"📚 End of results for **{escape(shown)}**. `/browse` to start over."
+            return (
+                f"📚 Nothing matches **{escape(shown)}**.\n"
+                "Filters: `genre=`, `key=`, `bpm=120-140`, `synced=yes`, or plain words."
+            )
+
+        first = self._browse_offset + 1
+        lines = [f"📚 **Library** — {escape(shown)}  [dim](showing {first}–{first + len(tracks) - 1})[/dim]\n"]
+        for i, t in enumerate(tracks, 1):
+            synced = "🎤" if t.get("has_synced_lyrics") else "  "
+            genre = f" · {t['genre']}" if t.get("genre") else ""
+            lines.append(
+                f"[bold cyan][{i}][/bold cyan] [dim][#{t['track_id']}][/dim] {synced} "
+                f"**{escape(t['artist'])}** — *{escape(t['title'])}* "
+                f"(`{t.get('camelot') or '?'}` / {round(t.get('bpm') or 0)} BPM{genre})"
+            )
+        tail = "  ·  `/browse more` for the next page" if data.get("has_more") else ""
+        lines.append(f"\n👉 **1**–**{len(tracks)}** to queue{tail}")
+        return "\n".join(lines)
+
+    def cmd_playlists(self) -> str:
+        """List saved playlists, so the DJ can pull from past sets."""
+        from . import localcache
+
+        with localcache.connect() as conn:
+            playlists = localcache.get_saved_playlists(limit=20, conn=conn)
+        if not playlists:
+            return "🗂 No saved playlists yet. Build one with `/suggest` or `/mood`, then `all`."
+
+        lines = ["🗂 **Saved playlists**\n"]
+        for p in playlists:
+            name = p.get("name") or p.get("playlist_id")
+            lines.append(
+                f"• **{escape(str(name))}** [dim]({p.get('track_count', 0)} tracks · "
+                f"`{p.get('playlist_id')}`)[/dim]"
+            )
+        lines.append("\n👉 `/playlist <name or id>` to open one. `/playlist` alone shows the DJ list.")
+        return "\n".join(lines)
+
+    def cmd_open_playlist(self, arg: str) -> str:
+        """Show a saved playlist's tracks, numbered so they can be queued."""
+        from . import localcache
+
+        needle = (arg or "").strip()
+        with localcache.connect() as conn:
+            pl = localcache.find_saved_playlist_by_id(needle, conn=conn)
+            if not pl:
+                # Fall back to a name match, since that is what /playlists shows.
+                for cand in localcache.get_saved_playlists(limit=100, conn=conn):
+                    if needle.lower() in str(cand.get("name") or "").lower():
+                        pl = cand
+                        break
+            if not pl:
+                return (
+                    f"🗂 No saved playlist matching *'{escape(needle)}'*. "
+                    "Try `/playlists` to see what exists."
+                )
+            tracks = localcache.get_saved_playlist_tracks(pl["playlist_id"], conn=conn)
+
+        self.last_candidates = list(tracks)
+        self.last_suggestions = list(tracks)
+        name = pl.get("name") or pl["playlist_id"]
+        if not tracks:
+            return f"🗂 **{escape(str(name))}** is empty."
+
+        lines = [f"🗂 **{escape(str(name))}** [dim]({len(tracks)} tracks)[/dim]\n"]
+        for i, t in enumerate(tracks[:20], 1):
+            lines.append(
+                f"[bold cyan][{i}][/bold cyan] [dim][#{t.get('track_id') or '—'}][/dim] "
+                f"**{escape(str(t.get('artist') or '?'))}** — *{escape(str(t.get('title') or '?'))}*"
+            )
+        if len(tracks) > 20:
+            lines.append(f"[dim]… and {len(tracks) - 20} more[/dim]")
+        lines.append(f"\n👉 **1**–**{min(len(tracks), 20)}** to add to the DJ list.")
         return "\n".join(lines)
 
     def cmd_search(self, query: str) -> str:

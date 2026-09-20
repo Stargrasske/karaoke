@@ -545,6 +545,175 @@ def _mirror_ascii_pose(line: str) -> str:
     return line.translate(table)[::-1]
 
 
+# -- additional dance poses for variety on a wide floor --------------------
+
+_DANCE_POSES: list[list[str]] = [
+    # 0  standing
+    [" o ", "/|\\", "/ \\"],
+    # 1  arms up
+    ["\\o/", " | ", "/ \\"],
+    # 2  left lean
+    [" o ", "/| ", "/ \\"],
+    # 3  right lean
+    [" o", " |\\", "/ \\"],
+    # 4  disco point
+    [" o/", " | ", "/ \\"],
+    # 5  crouch
+    [" o ", " /\\", " ||"],
+    # 6  kick left
+    [" o ", "/|\\", "_/ "],
+    # 7  kick right
+    [" o ", "/|\\", " \\_"],
+    # 8  wave
+    ["~o~", " | ", "/ \\"],
+    # 9  jump (arms wide)
+    ["\\o/", " | ", "   "],
+    # 10 headbang
+    [" o ", "\\|/", "/ \\"],
+    # 11 dab
+    ["  o", " /|_", "/ \\ "],
+]
+
+
+def dance_floor_frame(
+    bpm: float | None,
+    elapsed: float,
+    *,
+    width: int = 80,
+    height: int = 12,
+    num_dancers: int = 4,
+    mood: str = "neutral",
+    genre: str = "",
+    energy: float | None = None,
+) -> str:
+    """Render a dance floor with multiple ASCII dancers across the full width.
+
+    Each dancer cycles through poses at their own phase offset so the crowd
+    looks organic rather than synchronised. They hop on the beat at 100+ BPM
+    and sway at slower tempos.
+
+    Args:
+        bpm: Current track tempo.
+        elapsed: Seconds since the track started.
+        width: Available terminal columns.
+        height: Available terminal rows.
+        num_dancers: How many dancers to render (1-12).
+        mood: Current lyric mood.
+        genre: Current genre tag.
+        energy: Track energy (0-1).
+    """
+    import math
+
+    safe_bpm = float(bpm or 90.0)
+    beat = 60.0 / max(safe_bpm, 1.0)
+    beats = elapsed / beat
+    e = max(0.0, min(1.0, float(energy if energy is not None else 0.5)))
+
+    num_dancers = max(1, min(12, num_dancers))
+    figure_w = 5   # each dancer occupies 5 columns
+    # minimum gap so dancers don't overlap
+    min_gap = 2
+    # available space per dancer slot
+    slot_w = max(figure_w, width // max(1, num_dancers))
+    # If we can't fit all dancers, reduce count
+    while num_dancers > 1 and num_dancers * (figure_w + min_gap) > width:
+        num_dancers -= 1
+
+    # Choose pose set based on genre
+    genre_text = (genre or "").casefold()
+    if any(w in genre_text for w in ("metal", "hardcore", "punk", "rock")):
+        pose_indices = [0, 1, 10, 6, 7, 2, 3, 8]  # headbanging, kicks
+        floor_char = "✷"
+    elif any(w in genre_text for w in ("electronic", "techno", "dance", "house", "edm")):
+        pose_indices = [1, 8, 9, 4, 5, 0, 3, 2]  # waves, jumps
+        floor_char = "·"
+    elif any(w in genre_text for w in ("hip hop", "hip-hop", "rap", "soul")):
+        pose_indices = [4, 11, 5, 0, 2, 3, 1, 6]  # disco, dab
+        floor_char = "~"
+    elif mood == "tender":
+        pose_indices = [0, 2, 3, 1, 0, 3, 2, 1]  # gentle sways
+        floor_char = "♡"
+    else:
+        pose_indices = [0, 1, 2, 3, 4, 6, 7, 8]
+        floor_char = "·"
+
+    # Speed factor: faster energy = faster pose cycling
+    speed = 1.0 + e * 0.8
+
+    # Build each dancer's current pose
+    dancer_poses: list[list[str]] = []
+    dancer_airborne: list[bool] = []
+    for d in range(num_dancers):
+        # Phase offset: each dancer is offset by a fraction of the total cycle
+        # plus a golden-ratio-based irrational stagger so they never fully sync
+        phase_offset = d * 1.618033988749895
+        dancer_beats = beats * speed + phase_offset
+
+        # Pick pose from the genre set
+        pidx = int(dancer_beats * 2) % len(pose_indices)
+        pose = _DANCE_POSES[pose_indices[pidx] % len(_DANCE_POSES)]
+
+        # Should this dancer face left or right? Alternate.
+        if d % 2 == 1:
+            pose = [_mirror_ascii_pose(line) for line in pose]
+
+        dancer_poses.append(pose)
+
+        # Hop on the beat (100+ BPM only)
+        within = dancer_beats % 1.0
+        airborne = safe_bpm >= 100.0 and within < HOP_FRACTION
+        dancer_airborne.append(airborne)
+
+    # How many rows the dancers need: 3 body + 1 hop/land + 1 floor label
+    figure_h = 3
+    total_dancer_h = figure_h + 1  # +1 for hop blank row
+
+    # Build the dance floor canvas
+    canvas_h = max(total_dancer_h + 2, min(height, total_dancer_h + 4))
+    canvas: list[list[str]] = [[" "] * width for _ in range(canvas_h)]
+
+    # Place each dancer on the canvas
+    for d in range(num_dancers):
+        # x position: evenly spaced across the width
+        x = int((d + 0.5) * width / num_dancers) - figure_w // 2
+        x = max(0, min(width - figure_w, x))
+
+        # y position: base row, offset by hop
+        base_y = canvas_h - figure_h - 2  # -2 for floor line + bottom margin
+        if dancer_airborne[d]:
+            base_y -= 1  # hop up one row
+
+        pose = dancer_poses[d]
+        for row_i, pose_line in enumerate(pose):
+            y = base_y + row_i
+            if 0 <= y < canvas_h:
+                for col_i, ch in enumerate(pose_line):
+                    cx = x + col_i
+                    if 0 <= cx < width and ch != " ":
+                        canvas[y][cx] = ch
+
+    # Draw the dance floor line
+    floor_y = canvas_h - 2
+    if 0 <= floor_y < canvas_h:
+        # Pulsing floor pattern
+        pulse_phase = math.sin(beats * math.pi) * 0.5 + 0.5
+        for cx in range(width):
+            # Create a wave pattern across the floor
+            wave = math.sin(cx * 0.3 + elapsed * 2.0) * 0.5 + 0.5
+            if wave > (1.0 - pulse_phase * e):
+                if canvas[floor_y][cx] == " ":
+                    canvas[floor_y][cx] = floor_char
+
+    # Bottom status line
+    tempo = tempo_word(safe_bpm)
+    status = f"  ♫ {safe_bpm:.0f} bpm · {tempo} · {num_dancers} dancer{'s' if num_dancers != 1 else ''}"
+    if mood != "neutral":
+        status += f" · {mood}"
+
+    rows = ["".join(row).rstrip() for row in canvas]
+    rows.append(status)
+    return "\n".join(rows)
+
 
 def animate_mood_pixels(pixels: list[list[tuple[int, int, int]]], elapsed: float, bpm: float | None):
     if not pixels or not bpm or bpm <= 0:

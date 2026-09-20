@@ -293,3 +293,55 @@ def test_suggest_next_tracks_excludes_playlist_members(playable_track, monkeypat
         mcp_server.suggest_next_tracks(track_id=5001, limit=10, exclude_playlist="")
     )
     assert 5002 in [s["track_id"] for s in allowed["suggestions"]]
+
+
+@pytest.fixture
+def paging_library():
+    """Ten analysed tracks, enough to page through."""
+    from karaoke import localcache
+
+    with localcache.connect() as conn:
+        cur = conn.cursor()
+        for n in range(10):
+            tid = 6000 + n
+            cur.execute(
+                "INSERT INTO tracks (track_id, artist, title, album, duration, play_count)"
+                " VALUES (%s, %s, %s, %s, %s, %s)",
+                (tid, f"Artist {n:02d}", f"Song {n:02d}", "", 180.0, 100 - n),
+            )
+            cur.execute(
+                "INSERT INTO track_analysis (track_id, detected_key, bpm, energy, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s)",
+                (tid, "A minor", 120.0, 0.5, time.time()),
+            )
+    return [6000 + n for n in range(10)]
+
+
+def test_search_songs_pages_without_overlap(paging_library):
+    first = json.loads(mcp_server.search_songs(limit=4, offset=0))
+    second = json.loads(mcp_server.search_songs(limit=4, offset=4))
+
+    ids1 = [t["track_id"] for t in first["tracks"]]
+    ids2 = [t["track_id"] for t in second["tracks"]]
+    assert len(ids1) == 4 and len(ids2) == 4
+    assert not set(ids1) & set(ids2), "pages must not repeat tracks"
+    assert second["offset"] == 4
+
+
+def test_search_songs_reports_more_pages(paging_library):
+    """has_more needs a row beyond the window, not just a full page.
+
+    The first implementation stopped collecting exactly at the window, so
+    has_more was always False even with results left.
+    """
+    early = json.loads(mcp_server.search_songs(limit=4, offset=0))
+    assert early["has_more"] is True
+
+    last = json.loads(mcp_server.search_songs(limit=4, offset=8))
+    assert last["has_more"] is False
+
+
+def test_search_songs_offset_is_clamped(paging_library):
+    data = json.loads(mcp_server.search_songs(limit=3, offset=-5))
+    assert data["offset"] == 0
+    assert len(data["tracks"]) == 3

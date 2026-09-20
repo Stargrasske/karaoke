@@ -44,6 +44,7 @@ def search_songs(
     max_bpm: float = 300.0,
     only_synced_lyrics: bool = False,
     limit: int = 10,
+    offset: int = 0,
 ) -> str:
     """Search tracks in the karaoke library by title, artist, genre, key (e.g. 'Am', '8A', 'C'), or BPM range.
 
@@ -55,8 +56,10 @@ def search_songs(
         max_bpm: Maximum tempo in beats per minute.
         only_synced_lyrics: If true, only return tracks that have timestamped karaoke lyrics ready.
         limit: Max results to return (default 10, max 50).
+        offset: Skip this many matches first, for paging through the library.
     """
     limit = max(1, min(limit, 50))
+    offset = max(0, offset)
     target_camelot = key.strip().upper() if key else ""
 
     with localcache.connect() as conn:
@@ -113,8 +116,15 @@ def search_songs(
             sql += f" WHERE {' AND '.join(where_clauses)}"
 
         sql += " ORDER BY t.play_count DESC, t.artist, t.title LIMIT %s"
-        # Fetch extra if we need to filter by key/Camelot in python
-        fetch_limit = limit * 4 if target_camelot else limit
+        # Paging happens after the Camelot filter below, which runs in Python,
+        # so the window has to cover offset as well as limit -- otherwise page
+        # two of a key-filtered browse would start mid-way through page one.
+        window = limit + offset
+        # One extra row answers has_more without a second query. Camelot is
+        # filtered in Python after the fetch, and a given key is a small slice
+        # of the library, so that path needs a far wider net or later pages
+        # come back empty.
+        fetch_limit = max((window + 1) * 20, 200) if target_camelot else window + 1
         params.append(fetch_limit)
 
         cur.execute(sql, params)
@@ -152,12 +162,15 @@ def search_songs(
                 "url": r["url"] or "",
             })
 
-            if len(results) >= limit:
+            if len(results) > window:
                 break
 
+        page = results[offset:offset + limit]
         return json.dumps({
-            "count": len(results),
-            "tracks": results,
+            "count": len(page),
+            "offset": offset,
+            "has_more": len(results) > offset + limit,
+            "tracks": page,
         }, indent=2)
 
 

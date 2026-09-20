@@ -1163,6 +1163,25 @@ class KaraokeTui(App):
     Screen.-focus #transport-bar { display: none; }
     Screen.-focus #statusbar { display: none; }
     Screen.-focus Header { display: none; }
+
+    /* Dance mode: visuals pane takes the whole screen for a dance floor. */
+    Screen.-dance #sidebar { display: none; }
+    Screen.-dance #main { display: none; }
+    Screen.-dance Header { display: none; }
+    Screen.-dance #statusbar { display: none; }
+    Screen.-dance #visuals {
+        width: 1fr;
+        border: none;
+        padding: 0;
+    }
+    Screen.-dance #mood-square { display: none; }
+    Screen.-dance #mood-label { display: none; }
+    Screen.-dance #ascii-visual {
+        height: 1fr;
+        border: round magenta;
+        padding: 1 2;
+    }
+
     #browse-head { height: 3; margin-bottom: 0; }
     #browse-head Static { width: auto; min-width: 6; content-align: left middle; padding-right: 1; }
     #filter-select, #mood-select, #genre-select, #sort-select { width: 34; }
@@ -1227,6 +1246,7 @@ class KaraokeTui(App):
         ("o", "toggle_play_once", "Follow Queue (o)"),
         ("R", "toggle_mic", "Mic/radio"),
         ("F", "toggle_focus", "Focus"),
+        ("W", "toggle_dance", "Dance"),
         ("B", "browse_recordings", "Recordings"),
         ("T", "stats", "Stats"),
         ("D", "ai_dj_chat", "AI DJ"),
@@ -1322,6 +1342,8 @@ class KaraokeTui(App):
         self._active_playlist_name = ""
         self._last_notified_playlist_id = ""
         self._attempted_external_playlists: set[str] = set()
+        self._dance_mode = False
+        self._dance_num_dancers = 4
 
     # -- layout -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -2049,9 +2071,26 @@ class KaraokeTui(App):
 
     def action_toggle_focus(self) -> None:
         """`F`: lyrics only, hiding every other panel."""
+        if self._dance_mode:
+            self.screen.remove_class("-dance")
+            self._dance_mode = False
         on = not self.screen.has_class("-focus")
         self.screen.set_class(on, "-focus")
         self.notify("Focus mode" if on else "Focus mode off")
+
+    def action_toggle_dance(self) -> None:
+        """`W`: dance floor mode — visuals pane fills the whole screen."""
+        if self.screen.has_class("-focus"):
+            self.screen.remove_class("-focus")
+        self._dance_mode = not self._dance_mode
+        self.screen.set_class(self._dance_mode, "-dance")
+        if self._dance_mode:
+            self.notify(
+                f"Dance mode! {self._dance_num_dancers} dancers · "
+                "[ / ] to add/remove dancers · W to exit"
+            )
+        else:
+            self.notify("Dance mode off")
 
     # -- mic / radio mode -------------------------------------------------
     def mic_elapsed(self, now: float | None = None) -> float | None:
@@ -2852,7 +2891,13 @@ class KaraokeTui(App):
         Seeds on the currently selected song in the library table, or the
         currently playing track if no table row is highlighted.
         """
-        song = self._selected_song()
+        # DataTable.cursor_row is 0, not None, when no row was ever
+        # highlighted, so _selected_song() always returns something -- the
+        # first row of the current filter. Seeding on it unconditionally meant
+        # M always searched from that same track no matter what was playing,
+        # and the branches below were unreachable. Only trust the library
+        # selection when the user is actually in the library table.
+        song = self._selected_song() if self._library_has_focus() else None
         target_id = None
         target_label = ""
         if song and song.get("track_id"):
@@ -2869,6 +2914,15 @@ class KaraokeTui(App):
             if q_song.get("track_id"):
                 target_id = int(q_song["track_id"])
                 target_label = f"{q_song.get('artist')} - {q_song.get('title')}"
+
+        if not target_id:
+            # Nothing playing and nothing queued: fall back to the highlighted
+            # library row even without focus, so M still does something useful
+            # rather than refusing.
+            fallback = self._selected_song()
+            if fallback and fallback.get("track_id"):
+                target_id = int(fallback["track_id"])
+                target_label = f"{fallback.get('artist')} - {fallback.get('title')}"
 
         if not target_id:
             self.notify("No track selected or playing to find similar songs for",
@@ -3857,6 +3911,18 @@ class KaraokeTui(App):
                     pass
             self.notify("Track data updated from background event", severity="information")
 
+    def _library_has_focus(self) -> bool:
+        """Whether the library table is the widget the user is driving.
+
+        Distinguishes a deliberate row selection from the table's default
+        cursor position, which sits at row 0 whether or not anything was ever
+        highlighted.
+        """
+        try:
+            return bool(self.query_one("#library", DataTable).has_focus)
+        except Exception:
+            return False
+
     def _selected_song(self) -> SongRow | None:
         try:
             table = self.query_one("#library", DataTable)
@@ -4139,10 +4205,18 @@ class KaraokeTui(App):
             self.action_lyric_vibe()
 
     def action_seek_back(self) -> None:
+        if getattr(self, "_dance_mode", False):
+            self._dance_num_dancers = max(1, self._dance_num_dancers - 1)
+            self.notify(f"Dancers: {self._dance_num_dancers}")
+            return
         if self._det.is_active:
             self.api.player_seek(-5, self._control_player())
 
     def action_seek_fwd(self) -> None:
+        if getattr(self, "_dance_mode", False):
+            self._dance_num_dancers = min(12, self._dance_num_dancers + 1)
+            self.notify(f"Dancers: {self._dance_num_dancers}")
+            return
         if self._det.is_active:
             self.api.player_seek(5, self._control_player())
 
@@ -4586,6 +4660,28 @@ class KaraokeTui(App):
         arc = visuals.sentiment_arc(profile)
         bars = visuals.sentiment_bars(profile)
         rhythm = visuals.rhythm_bar(bpm, elapsed)
+
+        # Dance mode: full-screen dance floor replaces the normal visuals.
+        if self._dance_mode:
+            try:
+                visual_panel = self.query_one("#ascii-visual", Static)
+                pw = visual_panel.content_size.width or visual_panel.region.width or 80
+                ph = visual_panel.content_size.height or visual_panel.region.height or 20
+                dance = visuals.dance_floor_frame(
+                    bpm,
+                    elapsed,
+                    width=max(20, pw),
+                    height=max(6, ph),
+                    num_dancers=self._dance_num_dancers,
+                    mood=profile.dominant,
+                    genre=genre,
+                    energy=energy,
+                )
+                visual_panel.update(dance)
+            except Exception:
+                pass
+            return
+
         duet_width = 32
         try:
             visual_panel = self.query_one("#ascii-visual", Static)
