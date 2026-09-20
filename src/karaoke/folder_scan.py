@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 ProgressCallback = Callable[[str, dict[str, Any]], None]
 
 from . import (
-    analyze, clap_vector, genre, key_progression, localcache,
+    analyze, chords, clap_vector, genre, key_progression, localcache,
     lyrics, source_select, tags, youtube
 )
 from .identify import identify_file_fingerprint
@@ -78,6 +78,7 @@ def scan_and_ingest_folder(
         "classified": 0,
         "embedded": 0,
         "progressions": 0,
+        "chords": 0,
         "skipped": 0,
         "errors": 0,
         "items": [],
@@ -89,6 +90,7 @@ def scan_and_ingest_folder(
     # or it costs more than the work it avoids.
     done_clap: set[int] = set()
     done_prog: set[int] = set()
+    done_chords: set[int] = set()
     if not force and not dry_run:
         try:
             from .osclient import client as get_os_client
@@ -106,6 +108,19 @@ def scan_and_ingest_folder(
                                       for h in res["hits"]["hits"])
                     except Exception:
                         pass
+                # Chords are newer than progressions, so "has a progression"
+                # does not imply "has chords". Checked separately for the same
+                # reason the CLAP and progression sets are: treating one
+                # artefact as proof of another silently strands the rest.
+                try:
+                    res = os_client.search(index=key_progression.PROGRESSION_INDEX, body={
+                        "size": 10000, "_source": ["track_id"],
+                        "query": {"exists": {"field": "chord_motion"}},
+                    })
+                    done_chords.update(int(h["_source"]["track_id"])
+                                       for h in res["hits"]["hits"])
+                except Exception:
+                    pass
         except Exception:
             log.debug("could not read existing vectors; scanning everything")
 
@@ -117,7 +132,8 @@ def scan_and_ingest_folder(
             # expensive part -- not after it.
             if not force and c is not None:
                 known = localcache.find_track_by_url(str(path), c)
-                if known and known[0] in done_clap and known[0] in done_prog:
+                if (known and known[0] in done_clap and known[0] in done_prog
+                        and (not classify_audio or known[0] in done_chords)):
                     stats["skipped"] += 1
                     emit("skip", index=index, total=len(audio_files), path=str(path),
                          name=path.name, reason="already analysed")
@@ -145,9 +161,12 @@ def scan_and_ingest_folder(
                             (f"%{vid}%",),
                         ).fetchone()
                         if row:
-                            artist, title = row[0], row[1]
-                            album = row[2] or album
-                            duration = duration or row[3]
+                            # psycopg returns dict rows here, not tuples;
+                            # positional access raises KeyError: 0 and took
+                            # out every cache file in a scan (102 of 102).
+                            artist, title = row["artist"], row["title"]
+                            album = row["album"] or album
+                            duration = duration or row["duration"]
 
             # 1b. Fallback: Recording Session markers (e.g. seg-*.flac in recordings/)
             if (not artist or not title or artist.lower() in ("unknown", "track")) and "recordings" in str(path):
@@ -158,7 +177,7 @@ def scan_and_ingest_folder(
                         (f"%{rec_dir.name}%", str(rec_dir)),
                     ).fetchone()
                     if rec_row:
-                        rec_id = rec_row[0]
+                        rec_id = rec_row["recording_id"]
                         from . import recorder
                         from .recording_slice import segments
                         marks = recorder.load_marks(rec_id)
@@ -354,10 +373,22 @@ def scan_and_ingest_folder(
             if classify_audio:
                 try:
                     prog = key_progression.analyse(str(path))
+                    # Chord-level harmony goes in the same document. Key
+                    # movement and chord movement answer different questions
+                    # about the same track -- a ii-V-I is invisible to the
+                    # first and definitive to the second.
+                    chord_analysis = None
+                    try:
+                        chord_analysis = chords.detect(str(path))
+                    except Exception:
+                        log.debug("chord detection failed for %s", path, exc_info=True)
                     if prog and key_progression.store(track_id, prog,
                                                       artist=artist or "",
-                                                      title=title or ""):
+                                                      title=title or "",
+                                                      chords=chord_analysis):
                         stats["progressions"] += 1
+                        if chord_analysis is not None:
+                            stats["chords"] += 1
                 except Exception:
                     log.debug("progression analysis failed for %s", path, exc_info=True)
 

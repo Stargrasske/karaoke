@@ -2,9 +2,13 @@
 
 A single detected key describes a song the way an average describes a melody.
 Most pop sits in one key for three minutes; a blues sits in one key and moves
-its *chords*; jazz moves the key centre itself, often several times, around the
-circle of fifths. Those are different pieces of music that currently all reduce
-to one label like "A major".
+its *chords*; modal jazz moves the key centre itself. Those are different
+pieces of music that currently all reduce to one label like "A major".
+
+What this cannot see is chord-level harmony. A ii-V-I does not change the key,
+so a standard sounds tonally identical to a pop song here -- measured, Ella
+Fitzgerald scored 76% stability against 77% for the Red Hot Chili Peppers.
+:mod:`karaoke.chords` answers that question instead.
 
 This samples the key on a sliding window, smooths the result into sustained
 regions, and classifies the moves between them. The classification matters
@@ -47,9 +51,10 @@ CONFIRM_WINDOWS = 2
 #: Below this the window's own vote is too weak to reason about.
 MIN_CONFIDENCE = 0.55
 
-#: Intervals, in semitones, that read as circle-of-fifths movement. The
-#: signature of ii-V chains, and what separates jazz from a pop song that
-#: modulates once for the last chorus.
+#: Intervals, in semitones, that read as fifth-related movement between key
+#: centres. Note this is *key* movement, not the chord-level ii-V motion that
+#: characterises jazz -- a ii-V-I does not change the key, so it is invisible
+#: here by construction. See :mod:`karaoke.chords` for that.
 FIFTHS = {5, 7}
 
 #: Degrees of the home key whose chords a window can mistake for a key centre:
@@ -273,7 +278,12 @@ def _form_of(prog: "Progression") -> str:
         return "oscillating"
 
     if len(fifths) >= TRAVEL_MOVES and len(fifths) >= len(real) / 2:
-        return "circle-of-fifths"          # ii-V chains genuinely travelling
+        # Key centres a fifth apart, travelling rather than returning. Named
+        # for what it measures: this was called "circle-of-fifths" and could
+        # never fire, because every ii-V-I lands on a degree of the home key
+        # and is filtered as diatonic. Across 13 jazz tracks it matched zero
+        # times. Chord-level fifth motion lives in karaoke.chords.
+        return "fifth-related"
     if prog.changes_per_minute >= 1.5:
         return "restless"
     return "modulating"
@@ -357,6 +367,9 @@ PROGRESSION_INDEX = "karaoke-progression"
 #: every stored vector, exactly like the CLAP dimension.
 PROGRESSION_DIM = 17
 
+#: Chord root-motion histogram: twelve intervals, key-invariant.
+CHORD_MOTION_DIM = 12
+
 
 def doc_id(track_id: int) -> str:
     """One progression per track: re-analysing replaces rather than appends."""
@@ -390,17 +403,71 @@ def ensure_index(os_client: Any, index_name: str = PROGRESSION_INDEX) -> bool:
                     "method": {"name": "hnsw", "space_type": "cosinesimil",
                                "engine": "lucene"},
                 },
+                # Chord-level harmony, which the key-level fields cannot see:
+                # a ii-V-I does not change the key, so a jazz standard and a
+                # pop song are tonally identical above but differ sharply here
+                # (19.8 distinct chords against 13.2, measured).
+                "distinct_chords": {"type": "integer"},
+                "fifth_ratio": {"type": "float"},
+                "chord_changes_per_minute": {"type": "float"},
+                "chord_motion": {
+                    "type": "knn_vector",
+                    "dimension": CHORD_MOTION_DIM,
+                    "method": {"name": "hnsw", "space_type": "cosinesimil",
+                               "engine": "lucene"},
+                },
             }
         },
     })
     return True
 
 
+def ensure_chord_fields(os_client: Any, index_name: str = PROGRESSION_INDEX) -> bool:
+    """Add the chord fields to an index created before they existed.
+
+    ensure_index only creates a missing index, so an index already holding
+    progressions would otherwise never gain a knn mapping for chord_motion --
+    and a knn_vector cannot be added by dynamic mapping. Adding a field to an
+    existing mapping is allowed and idempotent.
+    """
+    try:
+        current = os_client.indices.get_mapping(index=index_name)
+        props = list(current.values())[0]["mappings"].get("properties", {})
+        if "chord_motion" in props:
+            return False
+        os_client.indices.put_mapping(index=index_name, body={
+            "properties": {
+                "distinct_chords": {"type": "integer"},
+                "fifth_ratio": {"type": "float"},
+                "chord_changes_per_minute": {"type": "float"},
+                "chord_motion": {
+                    "type": "knn_vector",
+                    "dimension": CHORD_MOTION_DIM,
+                    "method": {"name": "hnsw", "space_type": "cosinesimil",
+                               "engine": "lucene"},
+                },
+            }
+        })
+        return True
+    except Exception:
+        log.debug("could not add chord fields to %s", index_name, exc_info=True)
+        return False
+
+
 def build_doc(*, track_id: int, prog: Progression, artist: str = "",
-              title: str = "", analysed_at: str) -> dict:
+              title: str = "", analysed_at: str, chords: Any = None) -> dict:
     """Assemble the document for one analysed track."""
     real = [t for t in prog.transitions if t.kind not in NON_MODULATION]
+    doc_chords = {}
+    if chords is not None:
+        doc_chords = {
+            "distinct_chords": chords.distinct_chords,
+            "fifth_ratio": round(chords.fifth_ratio, 4),
+            "chord_changes_per_minute": round(chords.changes_per_minute, 2),
+            "chord_motion": chords.motion,
+        }
     return {
+        **doc_chords,
         "track_id": track_id,
         "artist": artist,
         "title": title,
@@ -416,7 +483,7 @@ def build_doc(*, track_id: int, prog: Progression, artist: str = "",
 
 
 def store(track_id: int, prog: Progression, *, artist: str = "", title: str = "",
-          os_client: Any = None) -> bool:
+          chords: Any = None, os_client: Any = None) -> bool:
     """Index a progression so it becomes searchable. Returns success.
 
     Best-effort for the same reason as the CLAP store: callers are part-way
@@ -436,11 +503,14 @@ def store(track_id: int, prog: Progression, *, artist: str = "", title: str = ""
         if client is None:
             return False
         ensure_index(client)
+        if chords is not None:
+            ensure_chord_fields(client)
         client.index(
             index=PROGRESSION_INDEX,
             id=doc_id(track_id),
             body=build_doc(track_id=track_id, prog=prog, artist=artist, title=title,
-                           analysed_at=datetime.now(timezone.utc).isoformat()),
+                           analysed_at=datetime.now(timezone.utc).isoformat(),
+                           chords=chords),
         )
         return True
     except Exception:
