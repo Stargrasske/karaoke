@@ -413,8 +413,21 @@ def prune_recordings(*, retain_days: float = RETAIN_DAYS,
     return notes
 
 
-def analyse(recording_id: int, *, keep: Optional[bool] = None) -> list[str]:
-    """Analyse every confident segment of a recording. Returns status lines."""
+def analyse(recording_id: int, *, keep: Optional[bool] = None,
+            prune_after: bool = False) -> list[str]:
+    """Analyse every confident segment of a recording. Returns status lines.
+
+    Analysing no longer triggers the retention sweep. It never deleted the
+    recording being analysed -- the audio deliberately stays, because lyric
+    alignment needs it later and a Spotify-sourced track has no other copy --
+    but it did prune *other* sessions past the age and size caps as a side
+    effect of an unrelated command. A radio broadcast cannot be recaptured, so
+    dropping one should be something you ask for: pass ``prune_after``, or run
+    ``--prune`` on its own.
+
+    ``keep`` is accepted for compatibility with existing callers and is now
+    the default behaviour; passing it changes nothing.
+    """
     from . import recorder
 
     record = load_recording(recording_id)
@@ -456,7 +469,7 @@ def analyse(recording_id: int, *, keep: Optional[bool] = None) -> list[str]:
     # track there is no other source of it -- deleting here made analysis and
     # alignment mutually exclusive. Retention handles the disk instead.
     lines.append(f"  {analysed} analysed; audio kept in {record['dir']}")
-    if keep is not True:
+    if prune_after:
         lines.extend(prune_recordings())
     return lines
 
@@ -529,7 +542,10 @@ def recording_main(argv: Optional[list[str]] = None) -> int:
                     help=f"drop audio older than {RETAIN_DAYS:.0f} days or over "
                          f"{MAX_TOTAL_BYTES / 1e9:.0f} GB, keeping all markers")
     ap.add_argument("--keep", action="store_true",
-                    help="with --analyse, keep the audio afterwards")
+                    help="deprecated: keeping the audio is now the default")
+    ap.add_argument("--prune-after", action="store_true",
+                    help="with --analyse, also run the retention sweep over "
+                         "other recordings afterwards")
     args = ap.parse_args(argv)
 
     if args.list:
@@ -543,7 +559,7 @@ def recording_main(argv: Optional[list[str]] = None) -> int:
         # a future web UI all trigger analysis the same way; falls back to an
         # in-process call when no server is running.
         from .api_client import ApiClient
-        res = ApiClient().record_analyse(args.analyse, keep=bool(args.keep))
+        res = ApiClient().record_analyse(args.analyse, prune_after=bool(args.prune_after))
         status = res.get("status", "unknown")
         if status == "analysed":
             # Ran synchronously in-process (no server up).
@@ -551,7 +567,7 @@ def recording_main(argv: Optional[list[str]] = None) -> int:
         elif status == "accepted":
             print(f"recording {args.analyse}: analysis dispatched")
         elif status == "unreachable":
-            print("\n".join(analyse(args.analyse, keep=args.keep or None)))
+            print("\n".join(analyse(args.analyse, prune_after=bool(args.prune_after))))
         else:
             print(f"recording {args.analyse}: {res.get('detail', status)}")
         return 0
