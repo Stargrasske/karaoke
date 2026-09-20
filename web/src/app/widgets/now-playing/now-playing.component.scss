@@ -1,0 +1,62 @@
+.lyric-follow {
+  display: grid;
+  gap: var(--space-2);
+  min-height: 8.5rem;
+  padding: var(--space-3);
+  overflow: hidden;
+  border-block: 1px solid var(--widget-border);
+  background: var(--widget-control);
+}
+
+.lyric-follow__line {
+  margin: 0;
+  color: var(--widget-muted);
+  font-size: var(--text-md);
+  line-height: 1.35;
+  transition: color 120ms ease, opacity 120ms ease;
+}
+
+.lyric-follow__line--past {
+  opacity: 0.45;
+}
+
+.lyric-follow__line--active {
+  color: var(--widget-heading);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.lyric-follow__line--active span {
+  padding: 0 0.08rem;
+  border-radius: 0.12rem;
+}
+
+.lyric-follow__word--active {
+  background: var(--widget-accent);
+  color: var(--widget-accent-contrast);
+}
+
+.lyric-follow__countdown {
+  justify-self: end;
+  color: var(--widget-muted);
+  font-size: var(--text-xs);
+}
+
+.lyric-follow__episode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 4rem;
+  border: 1px dashed var(--widget-accent);
+  color: var(--widget-accent);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.lyric-follow__episode-label {
+  justify-self: end;
+  color: var(--color-success);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+}

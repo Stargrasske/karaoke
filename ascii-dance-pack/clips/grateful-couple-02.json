@@ -1,0 +1,35 @@
+{
+  "id": "grateful-couple-02",
+  "title": "Bow-and-answer",
+  "feeling": "grateful",
+  "mode": "couple",
+  "characters": [
+    "robot",
+    "round"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    320,
+    320,
+    320,
+    320,
+    320,
+    320,
+    320,
+    320
+  ],
+  "duration_ms": 2560,
+  "frames": [
+    "                                        \n                                        \n                                        \n           [u_u]       o (u_u) o        \n             |          \\\\\\|///         \n             |             |            \n           //#\\\\           |            \n          o  |  o          |            \n            / \\           / \\           \n            / \\          /   \\          \n           =   =        _     _         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [u_u]         (u_u)          \n             |             |            \n             |           /-|-\\          \n           -o#o-       o/  |  \\o        \n             |             |            \n            | |           / \\           \n            | |           / \\           \n            = =          _   _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                        (u_u)           \n          o\\[u_u]/o       |             \n            \\ | /         |             \n             \\|/        //|\\\\           \n              #        o  |  o          \n              |          / \\            \n             / \\        /   \\           \n            /   \\       _   _           \n           =     =                      \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                        (u_u)           \n                          |             \n            [u_u]         |             \n              |         -o|o-           \n            /-|-\\         |             \n          o/  #  \\o      | |            \n              |          | |            \n             / \\         _ _            \n            /   \\                       \n            =   =                       \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n           [u_u]       o\\(u_u)/o        \n             |           \\ | /          \n            /|\\           \\|/           \n           / # \\           |            \n          o  |  o          |            \n            / \\           / \\           \n            / \\          /   \\          \n           =   =        _     _         \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [u_u]                        \n             |                          \n             |           (u_u)          \n           -o#o-           |            \n             |           /-|-\\          \n            | |        o/  |  \\o        \n            | |            |            \n            = =           / \\           \n                          / \\           \n                         _   _          \n                                        ",
+    "                                        \n                                        \n                                        \n        o [u_u] o                       \n         \\\\\\|///          (u_u)         \n            |               |           \n            #              /|\\          \n            |             / | \\         \n           / \\           o  |  o        \n          /   \\            / \\          \n         =     =          /   \\         \n                          _   _         \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          [u_u]           (u_u)         \n            |               |           \n          /-|-\\             |           \n        o/  #  \\o         -o|o-         \n            |               |           \n           / \\             | |          \n          /   \\            | |          \n          =   =            _ _          \n                                        \n                                        \n                                        "
+  ]
+}

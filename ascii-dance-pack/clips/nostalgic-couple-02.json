@@ -1,0 +1,35 @@
+{
+  "id": "nostalgic-couple-02",
+  "title": "Gentle retro shuffle",
+  "feeling": "nostalgic",
+  "mode": "couple",
+  "characters": [
+    "round",
+    "robot"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    340,
+    340,
+    340,
+    340,
+    340,
+    340,
+    340,
+    340
+  ],
+  "duration_ms": 2720,
+  "frames": [
+    "                                        \n                                        \n                                        \n           (v_v)         [v_v]          \n             |             |            \n             |             |            \n           //|\\\\         -o#o-          \n          o  |  o          |            \n            / \\           | |           \n            / \\           | |           \n           _   _          = =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           (v_v)         [v_v]          \n             |             |            \n         o---|---o       /-|-\\          \n             |         o/  #  \\o        \n             |             |            \n          /// \\           / \\           \n         _    \\           / \\           \n               _         =   =          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            (v_v)       [v_v]           \n              |           |             \n              |           |             \n            -o|o-       //#\\\\           \n              |        o  |  o          \n             | |         / \\            \n             | |        /   \\           \n             _ _        =   =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            (v_v)       [v_v]           \n              |           |             \n              |       o---|---o         \n            //|\\\\         #             \n           o  |  o        |             \n             / \\         / \\\\\\          \n            /   \\       /     =         \n            _   _       =               \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           (v_v)         [v_v]          \n             |             |            \n           /-|-\\           |            \n         o/  |  \\o       -o#o-          \n             |             |            \n            / \\           | |           \n            / \\           | |           \n           _   _          = =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           (v_v)         [v_v]          \n             |             |            \n         o---|---o         |            \n             |           //#\\\\          \n             |          o  |  o         \n            / \\\\\\         / \\           \n            /    _        / \\           \n           _             =   =          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          (v_v)           [v_v]         \n            |               |           \n            |             /-|-\\         \n          -o|o-         o/  #  \\o       \n            |               |           \n           | |             / \\          \n           | |            /   \\         \n           _ _            =   =         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          (v_v)           [v_v]         \n            |               |           \n          /-|-\\         o---|---o       \n        o/  |  \\o           #           \n            |               |           \n           / \\           /// \\          \n          /   \\         =     \\         \n          _   _               =         \n                                        \n                                        \n                                        "
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "id": "dreamy-couple-02",
+  "title": "Dream-wave duet",
+  "feeling": "dreamy",
+  "mode": "couple",
+  "characters": [
+    "round",
+    "robot"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    360,
+    360,
+    360,
+    360,
+    360,
+    360,
+    360,
+    360
+  ],
+  "duration_ms": 2880,
+  "frames": [
+    "                                        \n                                        \n                                        \n           (~_~)         [~_~]          \n             |             |  o         \n             |           /-|-/          \n           //|\\\\        o  #            \n          o  |  o          |            \n            / \\           \\ /           \n            / \\            \\            \n           _   _          = =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           (~_~)         [~_~]          \n             |             |            \n         o---|---o         |            \n             |           //#\\\\          \n             |          o  |  o         \n          /// \\           / \\           \n         _    \\           / \\           \n               _         =   =          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n            (~_~)                       \n              |  o      [~_~]           \n            /-|-/         |             \n           o  |           |             \n              |         //#\\\\           \n             / \\       o  |  o          \n            /   \\        / \\            \n           _     _      /   \\           \n                        =   =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n            (~_~)                       \n              |         [~_~]           \n           //-|-\\\\        |             \n          o   |   o   o---|---o         \n              |           #             \n             / \\          |             \n            /   \\        / \\\\\\          \n            _   _       /     =         \n                        =               \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n           (~_~)         [~_~]          \n             |          o  |            \n         o---|---o       \\-|-\\          \n             |             #  o         \n             |\\            |            \n            /  \\          / \\           \n            /   \\_       /   \\          \n           _            =     =         \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n           (~_~)         [~_~]          \n             |             |            \n            /|\\         //-|-\\\\         \n           / | \\       o   #   o        \n          o  |  o          |            \n            / \\           / \\           \n            / \\           / \\           \n           _   _         =   =          \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                          [~_~]         \n          (~_~)             |           \n         o  |           o---|---o       \n          \\-|-\\             #           \n            |  o           /|           \n            |             /  \\          \n           \\ /          =/    \\         \n            /                 =         \n           _ _                          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                          [~_~]         \n          (~_~)             |           \n            |              /|\\          \n            |             / # \\         \n          //|\\\\          o  |  o        \n         o  |  o           / \\          \n           / \\            /   \\         \n          /   \\           =   =         \n          _   _                         \n                                        \n                                        \n                                        "
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "id": "melancholy-couple-02",
+  "title": "Quiet call-and-response",
+  "feeling": "melancholy",
+  "mode": "couple",
+  "characters": [
+    "cat",
+    "sprite"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    380,
+    380,
+    380,
+    380,
+    380,
+    380,
+    380,
+    380
+  ],
+  "duration_ms": 3040,
+  "frames": [
+    "                                        \n                                        \n                                        \n                                        \n           /;_;\\                        \n             |           {;_;}          \n            /|\\            |            \n           / | \\       o---|---o        \n          /  |~ \\          *            \n          o / \\ o          |            \n            / \\         /// \\           \n           _   _       _    \\           \n                             _          \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n           /;_;\\                        \n             |           {;_;}          \n            /|\\            |            \n           / | \\           |            \n          o  |~ o        //*\\\\          \n            / \\         /  |  \\         \n            / \\         o / \\ o         \n           _   _          / \\           \n                         _   _          \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n                        {;_;}           \n            /;_;\\         |             \n              |          /|\\            \n          o---|---o     / * \\           \n              |         / | \\           \n              |~       o / \\ o          \n           /// \\        /   \\           \n          _     \\       _   _           \n                _                       \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n                        {;_;}           \n            /;_;\\         |             \n              |          /|\\            \n              |         / * \\           \n            //|\\\\      o  |  o          \n            / |~\\        / \\            \n           o / \\ o      /   \\           \n            /   \\       _   _           \n            _   _                       \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n           /;_;\\                        \n             |           {;_;}          \n            /|\\            |            \n           / | \\       o---|---o        \n          /  |~ \\          *            \n          o / \\ o          |            \n            / \\           / \\\\\\         \n           _   _          /    _        \n                         _              \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n           /;_;\\                        \n             |           {;_;}          \n            /|\\            |            \n           / | \\           |            \n          o  |~ o        //*\\\\          \n            / \\         /  |  \\         \n            / \\         o / \\ o         \n           _   _          / \\           \n                         _   _          \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n                          {;_;}         \n          /;_;\\             |           \n            |              /|\\          \n        o---|---o         / * \\         \n            |             / | \\         \n            |~           o / \\ o        \n           / \\\\\\          /   \\         \n          /     _         _   _         \n          _                             \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n                          {;_;}         \n          /;_;\\             |           \n            |              /|\\          \n            |             / * \\         \n          //|\\\\          o  |  o        \n          / |~\\            / \\          \n         o / \\ o          /   \\         \n          /   \\           _   _         \n          _   _                         \n                                        "
+  ]
+}

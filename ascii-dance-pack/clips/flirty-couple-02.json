@@ -1,0 +1,35 @@
+{
+  "id": "flirty-couple-02",
+  "title": "Flirt-and-answer",
+  "feeling": "flirty",
+  "mode": "couple",
+  "characters": [
+    "robot",
+    "round"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    240,
+    240,
+    240,
+    240,
+    240,
+    240,
+    240,
+    240
+  ],
+  "duration_ms": 1920,
+  "frames": [
+    "                                        \n                                        \n                                        \n           [^_-]         (^_-)          \n             |          o  |            \n             |           \\-|-\\          \n           //#\\\\           |  o         \n          o  |  o          |            \n            / \\           / \\           \n            / \\          /   \\          \n           =   =        _     _         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [^_-]         (^_-)          \n          o  |             |            \n           \\-|-\\           |            \n             #  o        -o|o-          \n             |             |            \n            \\ /           | |           \n             /            | |           \n            = =           _ _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            [^_-]       (^_-)           \n              |  o        |             \n            /-|-/         |             \n           o  #         //|\\\\           \n              |        o  |  o          \n             / \\         / \\            \n            /   \\       /   \\           \n           =     =      _   _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            [^_-]       (^_-)           \n              |           |  o          \n              |         /-|-/           \n            -o#o-      o  |             \n              |           |             \n             | |         \\ /            \n             | |          \\             \n             = =         _ _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [^_-]         (^_-)          \n             |          o  |            \n             |           \\-|-\\          \n           //#\\\\           |  o         \n          o  |  o          |            \n            / \\           / \\           \n            / \\          /   \\          \n           =   =        _     _         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [^_-]         (^_-)          \n          o  |             |            \n           \\-|-\\           |            \n             #  o        -o|o-          \n             |             |            \n            \\ /           | |           \n             /            | |           \n            = =           _ _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          [^_-]           (^_-)         \n            |  o            |           \n          /-|-/             |           \n         o  #             //|\\\\         \n            |            o  |  o        \n           / \\             / \\          \n          /   \\           /   \\         \n         =     =          _   _         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          [^_-]           (^_-)         \n            |               |  o        \n            |             /-|-/         \n          -o#o-          o  |           \n            |               |           \n           | |             \\ /          \n           | |              \\           \n           = =             _ _          \n                                        \n                                        \n                                        "
+  ]
+}

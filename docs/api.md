@@ -2,6 +2,23 @@
 
 This reference is generated from Python docstrings with `mkdocstrings`.
 
+## CORS (web dashboard)
+
+The library API binds `0.0.0.0` for cluster deployment and now sends CORS
+headers so a browser-based frontend (e.g. the Angular app at `karaoke/web/`)
+can call it cross-origin. Allowed origins default to `http://localhost:4200`
+and are configurable via the comma-separated `KARAOKE_WEB_ORIGIN` environment
+variable.
+
+## Background jobs
+
+`POST /api/staging/youtube` and `POST /api/staging/whisper` return a `job_id`
+alongside `status: "accepted"`; poll `GET /api/jobs/{job_id}` for
+`pending`/`running`/`done`/`error`. See [Control API](control-api.md#jobs-background-task-status)
+for the equivalent on the host-side control API (recording analysis, folder scans).
+
+::: karaoke.jobs
+
 ## CLI
 
 ::: karaoke.cli

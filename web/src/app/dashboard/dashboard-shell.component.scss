@@ -1,0 +1,96 @@
+.dashboard-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--color-page);
+}
+
+.dashboard-shell__tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  background: var(--color-surface);
+  overflow-x: auto;
+}
+
+.dashboard-shell__tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-surface-raised);
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  font: var(--text-sm) var(--font-body);
+  cursor: pointer;
+
+  &.active {
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+  }
+
+  &--new {
+    border-style: dashed;
+  }
+}
+
+.dashboard-shell__tab:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.dashboard-shell__tab-close {
+  opacity: 0.6;
+
+  &:hover {
+    opacity: 1;
+  }
+}
+
+.dashboard-shell__grid {
+  flex: 1;
+}
+
+.dashboard-shell__capture {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-block: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-muted);
+  font: var(--text-sm) var(--font-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dashboard-shell__capture:hover,
+.dashboard-shell__capture:focus-visible {
+  color: var(--color-text);
+  background: var(--color-control);
+}
+
+.dashboard-shell__capture:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.dashboard-shell__capture-dot {
+  flex: 0 0 auto;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--color-muted);
+}
+
+.dashboard-shell__capture--active {
+  color: var(--color-text);
+}
+
+.dashboard-shell__capture--active .dashboard-shell__capture-dot {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 0.25rem color-mix(in srgb, var(--color-danger) 20%, transparent);
+}

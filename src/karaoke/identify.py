@@ -55,7 +55,14 @@ def parse_query(text: str) -> SongRef:
 
 
 def _default_source(mic: bool) -> Optional[str]:
-    """Resolve the pactl source name: mic (default) or output monitor."""
+    """Resolve the default capture source name for this platform: mic or output monitor."""
+    from .audio_backend import IS_WINDOWS
+
+    if IS_WINDOWS:
+        # No output-monitor equivalent without a virtual "stereo mix" device;
+        # only the microphone side resolves automatically here.
+        from .audio_backend import default_windows_microphone
+        return default_windows_microphone() if mic else None
     if not shutil.which("pactl"):
         return None
     if not mic:
@@ -106,18 +113,26 @@ def robust_offset(matches: list[dict]) -> Optional[float]:
 
 def identify_live(mic: bool = True, timeout: int = 30,
                   source: str = "") -> Optional[SongRef]:
-    """Listen and identify the currently playing song via songrec.
+    """Listen and identify the currently playing song via songrec, or shazamio if songrec is unavailable.
 
     mic=True listens to the microphone (room audio); mic=False uses the
-    output sink monitor (audio playing through this machine).
+    output sink monitor (audio playing through this machine, Linux only).
     Returns None if nothing is recognized. Populates `offset` (position in the
     track) and `offset_mono` (monotonic clock at that instant) for sync.
     """
-    if not shutil.which("songrec"):
-        raise RuntimeError("songrec not installed (emerge media-sound/songrec)")
     # An explicit source wins: a caller already recording a specific monitor
     # must identify against that same one, not whatever the default resolves to.
     src = source or _default_source(mic)
+    if not shutil.which("songrec"):
+        from . import identify_shazamio
+        if not identify_shazamio.available():
+            raise RuntimeError(
+                "no song-identification backend available: install songrec "
+                "(Linux) or `pip install shazamio` (any OS, needs ffmpeg)"
+            )
+        if not src:
+            return None
+        return identify_shazamio.identify_live_shazamio(src, timeout=timeout)
     cmd = ["songrec", "recognize", "-j"]
     if src:
         cmd = ["songrec", "recognize", "-d", src, "-j"]

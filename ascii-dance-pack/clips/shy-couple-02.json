@@ -1,0 +1,35 @@
+{
+  "id": "shy-couple-02",
+  "title": "Shy step-and-answer",
+  "feeling": "shy",
+  "mode": "couple",
+  "characters": [
+    "cat",
+    "sprite"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    320,
+    320,
+    320,
+    640,
+    320,
+    320,
+    320,
+    640
+  ],
+  "duration_ms": 3200,
+  "frames": [
+    "                                        \n                                        \n                                        \n           /._.\\         {._.}          \n             |             |            \n             |             |            \n           -o|o-         -o*o-          \n             |~            |            \n            | |           | |           \n            | |           | |           \n            _ _           _ _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          o/._.\\         {._.}          \n           \\\\|             |            \n             |             |            \n             |\\--o       //*\\\\          \n             |~         o  |  o         \n           // \\           / \\           \n          /    _          / \\           \n          _              _   _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            /._.\\       {._.}           \n              |           |             \n              |           |             \n            -o|o-       -o*o-           \n              |~          |             \n             | |         | |            \n             | |         | |            \n             _ _         _ _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            /._.\\       {._.}o          \n              |           |//           \n              |           |             \n            //|\\\\     o--/*             \n           o  |~ o        |             \n             / \\         / \\\\           \n            /   \\       _   \\           \n            _   _            _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           /._.\\         {._.}          \n             |             |            \n             |             |            \n           -o|o-         -o*o-          \n             |~            |            \n            | |           | |           \n            | |           | |           \n            _ _           _ _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           /._.\\o        {._.}          \n             |//           |            \n             |             |            \n         o--/|           //*\\\\          \n             |~         o  |  o         \n            / \\\\          / \\           \n           _    \\         / \\           \n                _        _   _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          /._.\\           {._.}         \n            |               |           \n            |               |           \n          -o|o-           -o*o-         \n            |~              |           \n           | |             | |          \n           | |             | |          \n           _ _             _ _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          /._.\\          o{._.}         \n            |             \\\\|           \n            |               |           \n          //|\\\\             *\\--o       \n         o  |~ o            |           \n           / \\            // \\          \n          /   \\           /   _         \n          _   _          _              \n                                        \n                                        \n                                        "
+  ]
+}

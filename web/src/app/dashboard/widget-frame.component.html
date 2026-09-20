@@ -1,0 +1,30 @@
+<div class="widget-frame" [class.maximized]="maximized" [attr.data-widget-style]="instance.style">
+  <header class="widget-frame__header">
+    <span class="widget-frame__title widget-frame__drag-handle" title="Drag widget">{{ entry?.label ?? instance.type }}</span>
+    <div class="widget-frame__actions">
+      <select
+        class="widget-frame__style-select"
+        [value]="instance.style"
+        (change)="onStyleChange($event)"
+        title="Switch style"
+      >
+        @for (style of availableStyles; track style) {
+          <option [value]="style">{{ style }}</option>
+        }
+      </select>
+      <button type="button" (click)="maximizeToggle.emit()" title="Maximize / restore">
+        {{ maximized ? 'Restore' : 'Maximize' }}
+      </button>
+      <button type="button" (click)="remove.emit()" title="Remove widget">Remove</button>
+    </div>
+  </header>
+  <div class="widget-frame__body">
+    @if (entry) {
+      <ng-container
+        *ngComponentOutlet="entry.component; inputs: { config: instance.config, label: entry.label }"
+      ></ng-container>
+    } @else {
+      <div class="widget-frame__missing">Unknown widget: {{ instance.type }}/{{ instance.style }}</div>
+    }
+  </div>
+</div>

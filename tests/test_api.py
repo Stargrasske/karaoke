@@ -100,6 +100,26 @@ def test_get_track_detail_includes_sources(db, client):
     assert body["sources"][0]["url"] == "https://youtu.be/XFkzRNyygfk"
 
 
+def test_lookup_lyrics_fetches_and_caches_missing_track(db, client, monkeypatch):
+    from karaoke.lyrics import Lyrics
+
+    monkeypatch.setattr(
+        "karaoke.lyrics.fetch_lrclib",
+        lambda *args, **kwargs: Lyrics(plain="First line\nSecond line", source="lrclib"),
+    )
+    response = client.post(
+        "/api/lyrics/lookup",
+        json={"artist": "Portishead", "title": "Glory Box"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artist"] == "Portishead"
+    assert body["lyrics"]["plain"] == "First line\nSecond line"
+
+    cached = client.get(f"/api/tracks/{body['track_id']}").json()
+    assert cached["lyrics"]["source"] == "lrclib"
+
+
 def test_get_track_analysis_history(db, client):
     db_path, track_id = db
     conn = _real_connect(db_path)
@@ -143,6 +163,7 @@ def test_deployable_modules_do_not_require_textual():
     textual at module level, so CI (no textual) failed at collection while a
     dev machine with textual passed.
     """
+    import os
     import subprocess
     import sys
     from pathlib import Path
@@ -154,9 +175,14 @@ def test_deployable_modules_do_not_require_textual():
         "import karaoke.api, karaoke.ctrl_api;"
         "print('OK')"
     )
+    # Inherit the parent environment rather than replacing it outright: a bare
+    # {"PYTHONPATH": ..., "PATH": ""} drops OS-required variables (SystemRoot on
+    # Windows, needed for asyncio's overlapped I/O; similar gaps on macOS/Linux),
+    # so the subprocess crashed before even reaching the import under test.
+    env = {**os.environ, "PYTHONPATH": str(src)}
     result = subprocess.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True, env={"PYTHONPATH": str(src), "PATH": ""},
+        capture_output=True, text=True, env=env,
     )
     assert result.returncode == 0, result.stderr
     assert "OK" in result.stdout

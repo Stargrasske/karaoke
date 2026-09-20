@@ -1,0 +1,99 @@
+ASCII DANCE POCKET LIBRARY
+96 loops / 24 feelings / 48 solos / 48 couples
+Static sample poses. Run player.py for motion.
+
+JOYFUL / Hand-in-hand hops
+                                        
+           o(^_^)     [^_^]o            
+            \\|         |//             
+              |         |               
+              |\---o---/#               
+              |         |               
+            // \       / \\             
+            /   _     =   \             
+           _               =            
+                                        
+                                        
+                                        
+                                        
+                                        
+
+ROMANTIC / Close linked sway
+                                        
+                                        
+                                        
+            (u_u)     [u_u]             
+              |         |               
+              |         |               
+            -o|\---o---/#o-             
+              |         |               
+             | |       | |              
+             | |       | |              
+             _ _       = =              
+                                        
+                                        
+                                        
+
+ANGRY / Stomp-together release
+                                        
+                                        
+                                        
+            [>_<]     (>_<)             
+              |         |               
+              |         |               
+            \/#\---o---/|\/             
+             o|         |o              
+            // \\     // \\             
+           =     =   _     _            
+                                        
+                                        
+                                        
+                                        
+
+SHY / Hesitant handhold
+                                        
+                                        
+                                        
+             (._.)     [._.]            
+               |         |              
+               |         |              
+             -o|\---o---/#o-            
+               |         |              
+              | |       | |             
+              | |       | |             
+              _ _       = =             
+                                        
+                                        
+                                        
+
+SLEEPY / Sleepy linked sway
+                                        
+                                        
+                                        
+                                        
+                                        
+            [-.-]     (-.-)             
+              |         |               
+              |         |               
+            //#\---o---/|\\             
+           o  |         |  o            
+             / \       / \              
+            /   \     /   \             
+            =   =     _   _             
+                                        
+
+SILLY / Goofy linked kicks
+                                        
+            [o_O]     (o_O)             
+              |         |               
+              |         |               
+            \/#\---o---/|\/             
+             o|         |o              
+            // \\     // \\             
+           =     =   _     _            
+                                        
+                                        
+                                        
+                                        
+                                        
+                                        

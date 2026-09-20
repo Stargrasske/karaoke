@@ -2077,7 +2077,7 @@ class KaraokeTui(App):
             self._mic_stop.wait(MIC_REIDENTIFY_S)
 
     def action_toggle_mic(self) -> None:
-        """`R`: follow room audio via the microphone (songrec)."""
+        """`R`: follow room audio via the microphone (songrec, or shazamio where songrec isn't available)."""
         import shutil
 
         if self._mic_stop is not None and not self._mic_stop.is_set():
@@ -2087,13 +2087,15 @@ class KaraokeTui(App):
             self.notify("Mic off")
             return
 
-        if not shutil.which("songrec"):
-            self.notify("songrec is not installed", severity="error")
-            return
         if _radio_cli_running():
             # Two recognisers on one mic just take turns failing.
             self.notify("karaoke -r is already using the mic", severity="warning")
             return
+        if not shutil.which("songrec"):
+            from . import identify_shazamio
+            if not identify_shazamio.available():
+                self.notify("songrec is not installed", severity="error")
+                return
 
         self._mic_stop = threading.Event()
         self._mic_ref = None

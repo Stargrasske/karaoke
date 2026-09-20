@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from . import localcache
@@ -30,6 +31,20 @@ app = FastAPI(
         "stats and logs. Playback is handled by the host-side control API."
     ),
     version=API_VERSION,
+)
+
+# Allow the Angular web dashboard (karaoke/web) to call this API from a different
+# origin/port in dev and production. Configurable since this service binds 0.0.0.0.
+_web_origins = [
+    origin.strip()
+    for origin in os.environ.get("KARAOKE_WEB_ORIGIN", "http://localhost:4200").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_web_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(staging_router)
@@ -55,6 +70,13 @@ class TrackResponse(BaseModel):
 class UpdateRecordingRequest(BaseModel):
     note: Optional[str] = None
     keep_audio: Optional[bool] = None
+
+
+class LyricsLookupRequest(BaseModel):
+    artist: str
+    title: str
+    album: Optional[str] = None
+    duration: Optional[float] = None
 
 
 class QueueSuggestRequest(BaseModel):
@@ -177,6 +199,38 @@ def list_tracks(
             }
             for row in cur.fetchall()
         ]
+
+
+@app.post("/api/lyrics/lookup")
+def lookup_lyrics(req: LyricsLookupRequest) -> dict[str, Any]:
+    """Fetch lyrics by artist/title and add a successful result to the Songbook."""
+    from . import lyrics as lyrics_client
+
+    artist = req.artist.strip()
+    title = req.title.strip()
+    if not artist or not title:
+        raise HTTPException(status_code=400, detail="Artist and title are required")
+
+    with localcache.connect() as conn:
+        result = localcache.get_cached_lyrics(artist, title, conn=conn)
+        if result is None:
+            result = lyrics_client.fetch_lrclib(
+                artist, title, req.album, req.duration, timeout=10.0)
+            if not (result.plain or result.synced_raw):
+                raise HTTPException(status_code=404, detail="No lyrics found on LRCLIB")
+            localcache.put_cached_lyrics(
+                artist,
+                title,
+                result,
+                album=req.album or "",
+                duration=req.duration,
+                conn=conn,
+            )
+        track_id = localcache.find_track_id(artist, title, conn)
+
+    if track_id is None:
+        raise HTTPException(status_code=500, detail="Lyrics were found but could not be cached")
+    return get_track(track_id)
 
 
 @app.get("/api/tracks/{track_id}")

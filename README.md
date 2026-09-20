@@ -36,10 +36,30 @@ See the implementation plan: `~/.hermes/plans/2026-08-29_173500-local-karaoke-pl
 ## Dev quickstart
 
 ```bash
-python3.14 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
-pytest -v
+# Windows PowerShell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+cd web; npm install; cd ..
+python scripts/dev.py
+
+# Linux/macOS
+python3 -m venv .venv && . .venv/bin/activate
+python -m pip install -e ".[dev]"
+(cd web && npm install)
+python scripts/dev.py
 ```
+
+The development command starts the read-only library API on port 8000, the
+desktop control API on port 8765, and the Angular dashboard on port 4200. It
+waits for each service to become healthy and stops the complete process tree on
+Ctrl+C. Open `http://localhost:4200` for the dashboard. Use `--no-control` or
+`--no-web` when working on only part of the stack.
+
+Python 3.11 or newer and Node.js/npm are required. OpenSearch, RabbitMQ, Docker,
+and pre-seeded data are optional for the first view. On Windows, recording uses
+an ffmpeg DirectShow microphone; automatic `songrec` identification remains
+Linux-only.
 
 ## Usage
 

@@ -72,7 +72,7 @@ class PostprocessContext:
     # Methods for easy serialization/deserialization to/from dict for Celery
     def to_dict(self) -> dict[str, Any]:
         d = dict(self.__dict__)
-        d["audio_path"] = str(self.audio_path) if self.audio_path else None
+        d["audio_path"] = self.audio_path.as_posix() if self.audio_path else None
         d["pending"] = list(self.pending) if self.pending else []
         # Convert Path objects to strings for serialization
         return d
@@ -211,7 +211,12 @@ def resolve_track_id(self, payload: dict[str, Any]) -> dict[str, Any]:
                             log.debug("postprocess: youtube search failed: %s", e)
         context.pending = needs_postprocessing(track_id, conn)
 
-    return context.to_dict() # Return dict for serialization
+    result = context.to_dict()
+    if context.audio_path:
+        # Keep the public task result in the host-native form expected by
+        # callers; chained task serialization remains path-separator stable.
+        result["audio_path"] = str(context.audio_path)
+    return result
 
 
 @app.task(bind=True, name="karaoke.tasks.download_audio", autoretry_for=(Exception,), retry_backoff=True, retry_jitter=True, max_retries=2)

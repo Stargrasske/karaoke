@@ -34,6 +34,9 @@ dev = ["pytest>=8.0", "responses>=0.25"]
 spotify = ["spotipy>=2.24"]
 beats = ["librosa>=0.10", "soundfile>=0.12"]
 youtube = ["yt-dlp>=2024.0"]
+# Cross-platform (incl. Windows) fallback for live song identification when
+# the Linux-only `songrec` binary isn't installed. See karaoke.identify_shazamio.
+shazam = ["shazamio>=0.8"]
 web = ["textual-serve>=1.1"]
 
 [project.scripts]
@@ -58,6 +61,7 @@ karaoke-find-sources = "karaoke.find_sources:find_sources_main"
 karaoke-sample = "karaoke.sample_audio:sample_main"
 karaoke-smartlist = "karaoke.smartlist:smartlist_main"
 karaoke-recording = "karaoke.recording_worker:recording_main"
+karaoke-lyrics-video = "karaoke.lyrics_video:main"
 karaoke-align-review = "karaoke.lyric_align:review_main"
 karaoke-similar = "karaoke.search:similar_main"
 karaoke-sounds-like = "karaoke.search:describe_main"

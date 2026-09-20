@@ -42,6 +42,7 @@ def test_get_stage_state_idle():
         assert state["lines"] == []
         assert state["upcoming_queue"] == []
         assert state["active_line_index"] == -1
+        assert state["episode"]["kind"] == "unknown"
 
 
 def test_get_stage_state_with_playback_and_lyrics():
@@ -108,6 +109,90 @@ def test_get_stage_state_with_playback_and_lyrics():
         assert state["active_line_index"] == 1
         assert len(state["upcoming_queue"]) == 1
         assert state["upcoming_queue"][0]["title"] == "Don't Stop Me Now"
+
+
+def test_get_stage_state_uses_browser_metadata_without_mpris():
+    fake_playback = {
+        "present": True,
+        "position": 15.5,
+        "duration": 200.0,
+        "casting": False,
+        "paused": False,
+        "url": "https://music.youtube.com/watch?v=xyz",
+        "artist": "Queen",
+        "title": "Bohemian Rhapsody",
+        "album": "A Night at the Opera",
+        "artUrl": "https://art.example/cover.jpg",
+    }
+    fake_ly = MagicMock(
+        synced_raw="[00:10.00]First line\n[00:15.00]Active line\n[00:20.00]Next line",
+        lines=[(10.0, "First line"), (15.0, "Active line"), (20.0, "Next line")],
+    )
+    fake_conn = MagicMock()
+    fake_conn.execute.return_value.fetchone.return_value = None
+
+    with patch("karaoke.player_open.browser_playback", return_value=fake_playback), \
+         patch("karaoke.playerctl.playing_player", return_value=""), \
+         patch("karaoke.localcache.connect") as mock_conn, \
+         patch("karaoke.localcache.find_track_id", return_value=123), \
+         patch("karaoke.localcache.get_lyrics_by_track_id", return_value=fake_ly), \
+         patch("karaoke.track_analysis.ensure_schema"), \
+         patch("karaoke.localcache.load_active_queue", return_value=None):
+        mock_conn.return_value.__enter__.return_value = fake_conn
+        state = get_stage_state()
+
+    assert state["artist"] == "Queen"
+    assert state["title"] == "Bohemian Rhapsody"
+    assert state["position_s"] == 15.5
+    assert state["active_line_index"] == 1
+
+
+def test_get_stage_state_uses_recorder_detection_without_player():
+    mark = MagicMock(
+        ok=True,
+        artist="The Offspring",
+        title="Self Esteem",
+        start_estimate=100.0,
+    )
+    fake_ly = MagicMock(
+        synced_raw="[00:10.00]First line\n[00:15.00]Active line\n[00:20.00]Next line",
+        lines=[(10.0, "First line"), (15.0, "Active line"), (20.0, "Next line")],
+    )
+    fake_conn = MagicMock()
+    fake_conn.execute.return_value.fetchone.return_value = None
+
+    with patch("karaoke.player_open.browser_playback", return_value=None), \
+         patch("karaoke.playerctl.playing_player", return_value=""), \
+         patch("karaoke.recorder.active_sessions", return_value=[4]), \
+         patch("karaoke.recorder.load_marks", return_value=[mark]), \
+         patch("karaoke.stage_view.time.time", return_value=115.5), \
+         patch("karaoke.localcache.connect") as mock_conn, \
+         patch("karaoke.localcache.find_track_id", return_value=1), \
+         patch("karaoke.localcache.get_lyrics_by_track_id", return_value=fake_ly), \
+         patch("karaoke.track_analysis.ensure_schema"), \
+         patch("karaoke.localcache.load_active_queue", return_value=None):
+        mock_conn.return_value.__enter__.return_value = fake_conn
+        state = get_stage_state()
+
+    assert state["artist"] == "The Offspring"
+    assert state["title"] == "Self Esteem"
+    assert state["position_s"] == 15.5
+    assert state["active_line_index"] == 1
+
+
+def test_lyric_episode_marks_long_gap_as_instrumental():
+    from karaoke.stage_view import _lyric_episode
+
+    lines = [
+        {"index": 0, "time": 10.0, "end": None, "text": "A short line", "words": []},
+        {"index": 1, "time": 40.0, "end": None, "text": "Vocals return", "words": []},
+    ]
+    assert _lyric_episode(lines, 5.0)["kind"] == "intro"
+    assert _lyric_episode(lines, 11.0)["kind"] == "vocals"
+    episode = _lyric_episode(lines, 25.0)
+    assert episode["kind"] == "instrumental"
+    assert episode["label"] == "Instrumental break"
+    assert _lyric_episode(lines, 41.0)["kind"] == "vocals"
 
 
 def test_stage_event_stream_generator():

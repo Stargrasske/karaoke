@@ -1,0 +1,38 @@
+.songbook-lyrics {
+  margin-block: var(--space-3);
+  border-block: 1px solid var(--widget-border);
+}
+
+.songbook-lyrics__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-block: var(--space-2);
+}
+
+.songbook-lyrics pre {
+  max-height: 22rem;
+  margin: 0;
+  padding: var(--space-3) 0;
+  overflow: auto;
+  color: var(--widget-text);
+  font: inherit;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.lyrics-lookup {
+  display: grid;
+  grid-template-columns: auto minmax(8rem, 1fr) minmax(8rem, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--widget-border);
+  background: var(--widget-control);
+}
+
+@media (max-width: 720px) {
+  .lyrics-lookup {
+    grid-template-columns: 1fr;
+  }
+}

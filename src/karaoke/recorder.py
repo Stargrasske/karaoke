@@ -15,6 +15,13 @@ so ffmpeg and songrec do not contend. The monitor is also a different device
 from the microphone, so record mode composes with radio mode rather than
 fighting it for an input.
 
+On Windows there is no PipeWire/PulseAudio monitor to loop back speaker output
+from, so this module captures a DirectShow microphone/line-in device instead
+(see :mod:`karaoke.audio_backend`) — a real platform difference, not just a
+naming one: Windows sessions record room audio, Linux sessions record the
+sink's output. Song identification (``songrec``) has no Windows build, so
+markers are simply not produced there; the raw audio capture still works.
+
 The recording is a means to metadata, not a library. ``keep_audio`` is off by
 default and the analysis worker deletes the audio once it has extracted what it
 needs.
@@ -22,6 +29,7 @@ needs.
 from __future__ import annotations
 
 import shutil
+import re
 import subprocess
 import threading
 import time
@@ -30,6 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import localcache
+from .audio_backend import IS_WINDOWS, ffmpeg_input_args
 from .logger import log
 
 # One segment per ten minutes: a crash costs a segment rather than the session,
@@ -65,6 +74,7 @@ class Session:
     process: subprocess.Popen
     stop: threading.Event
     started_mono: float
+    level_db: Optional[float] = None
 
 
 _sessions: dict[int, Session] = {}
@@ -102,7 +112,7 @@ def elapsed(recording_id: int) -> Optional[float]:
 
 
 def session_source(recording_id: int) -> Optional[str]:
-    """The PipeWire source a running session is recording."""
+    """The input source (PulseAudio source or Windows device name) a running session is recording."""
     with _lock:
         session = _sessions.get(recording_id)
     return session.source if session else None
@@ -122,10 +132,11 @@ def directory_size(directory: Path) -> int:
         return 0
 
 
-def _ffmpeg_cmd(source: str, directory: Path) -> list[str]:
+def _ffmpeg_cmd(source: str, directory: Path, *, windows_device: bool = False) -> list[str]:
     return [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-        "-f", "pulse", "-i", source,
+        "ffmpeg", "-hide_banner", "-loglevel", "verbose", "-nostdin",
+        *ffmpeg_input_args(source, windows_device=windows_device),
+        "-filter:a", "ebur128=peak=true:framelog=verbose",
         "-f", "segment", "-segment_time", str(SEGMENT_SECONDS),
         # Wall-clock names, so the timeline survives a crash: the segments can
         # be placed on the same clock the markers use without any state.
@@ -138,11 +149,19 @@ def _ffmpeg_cmd(source: str, directory: Path) -> list[str]:
 def start(source: str = "", *, keep_audio: bool = False,
           note: Optional[str] = None,
           conn: Optional[object] = None) -> Session:
-    """Begin recording the playing output and marking what is on it."""
+    """Begin recording the playing output and marking what is on it.
+
+    Never falls back to the microphone by default: on Windows there is no
+    PipeWire/PulseAudio monitor, so recording there requires an explicit
+    ``source`` (a DirectShow device name; see
+    :func:`karaoke.audio_backend.list_windows_audio_devices`) rather than
+    silently listening to whatever mic happens to be default.
+    """
     from .sample_audio import monitor_source
 
     if not shutil.which("ffmpeg"):
         raise RecorderError("ffmpeg is not installed")
+    windows_device = bool(source) and IS_WINDOWS
     src = source or monitor_source()
     if not src:
         raise RecorderError("nothing is playing; no output to record")
@@ -166,7 +185,7 @@ def start(source: str = "", *, keep_audio: bool = False,
             c.close()
 
     try:
-        proc = subprocess.Popen(_ffmpeg_cmd(src, directory),
+        proc = subprocess.Popen(_ffmpeg_cmd(src, directory, windows_device=windows_device),
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.PIPE)
     except OSError as exc:
@@ -181,8 +200,45 @@ def start(source: str = "", *, keep_audio: bool = False,
 
     thread = threading.Thread(target=_identify_loop, args=(session,), daemon=True)
     thread.start()
+    level_thread = threading.Thread(target=_level_loop, args=(session,), daemon=True)
+    level_thread.start()
     log.info("recording %d started: %s -> %s", recording_id, src, directory)
     return session
+
+
+_MOMENTARY_LEVEL_RE = re.compile(r"\bM:\s*(-?(?:\d+(?:\.\d+)?|inf))")
+
+
+def _parse_level(line: str) -> Optional[float]:
+    match = _MOMENTARY_LEVEL_RE.search(line)
+    if not match or match.group(1) == "-inf":
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _level_loop(session: Session) -> None:
+    """Consume FFmpeg meter output so stderr cannot fill and stall capture."""
+    stream = getattr(session.process, "stderr", None)
+    if stream is None:
+        return
+    for raw_line in iter(stream.readline, b""):
+        line = raw_line.decode(errors="replace") if isinstance(raw_line, bytes) else raw_line
+        level = _parse_level(line)
+        if level is not None:
+            with _lock:
+                current = _sessions.get(session.recording_id)
+                if current is session:
+                    current.level_db = level
+
+
+def audio_level(recording_id: int) -> Optional[float]:
+    """Latest momentary loudness reported by the active FFmpeg capture."""
+    with _lock:
+        session = _sessions.get(recording_id)
+    return session.level_db if session else None
 
 
 def _identify_loop(session: Session) -> None:

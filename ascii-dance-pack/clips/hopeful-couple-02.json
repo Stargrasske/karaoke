@@ -1,0 +1,35 @@
+{
+  "id": "hopeful-couple-02",
+  "title": "Shared upward reaches",
+  "feeling": "hopeful",
+  "mode": "couple",
+  "characters": [
+    "cat",
+    "sprite"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    280,
+    280,
+    280,
+    280,
+    280,
+    280,
+    280,
+    280
+  ],
+  "duration_ms": 2240,
+  "frames": [
+    "                                        \n                                        \n                                        \n                        o{*_*}          \n           /*_*\\         \\\\|            \n             |             |            \n            /|\\            *\\--o        \n           / | \\           |            \n          o  |~ o        // \\           \n            / \\         /    _          \n            / \\         _               \n           _   _                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n           /*_*\\       o\\{*_*}/o        \n             |           \\ | /          \n            /|\\           \\|/           \n           \\ | /           *            \n            /|~            |            \n           /   \\          / \\           \n          _     _        /   \\          \n                        _     _         \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           o/*_*\\                       \n            \\\\|         {*_*}           \n              |           |             \n              |\\--o      /|\\            \n              |~        / * \\           \n            // \\       o  |  o          \n            /   _        / \\            \n           _            /   \\           \n                        _   _           \n                                        \n                                        ",
+    "                                        \n                                        \n          o\\/*_*\\/o                     \n            \\ | /                       \n             \\|/        {*_*}           \n              |           |             \n              |~         /|\\            \n             / \\        \\ * /           \n            /   \\        /|\\            \n           _     _      /   \\           \n                       _     _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n           /*_*\\                        \n             |           {*_*}o         \n            /|\\            |//          \n           / | \\           |            \n          o  |~ o      o--/*            \n            / \\            |            \n            / \\           / \\\\          \n           _   _         _    \\         \n                              _         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                       o\\{*_*}/o        \n           /*_*\\         \\ | /          \n             |            \\|/           \n             |             *            \n           \\/|\\/           |            \n            o|~           / \\           \n           // \\\\         /   \\          \n          _     _       _     _         \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                          {*_*}         \n          /*_*\\o            |           \n            |//            /|\\          \n            |             / * \\         \n        o--/|            o  |  o        \n            |~             / \\          \n           / \\\\           /   \\         \n          _   \\           _   _         \n               _                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                          {*_*}         \n        o\\/*_*\\/o           |           \n          \\ | /             |           \n           \\|/            \\/*\\/         \n            |              o|o          \n            |~            // \\\\         \n           / \\           _     _        \n          /   \\                         \n         _     _                        \n                                        \n                                        "
+  ]
+}

@@ -248,7 +248,7 @@ def test_the_kiosk_window_is_not_paused(monkeypatch):
         "/proc/77/cmdline": "vlc\0",
     }
     monkeypatch.setattr(player_open.Path, "read_bytes",
-                        lambda self: cmdlines[str(self)].encode())
+                            lambda self: cmdlines[str(self).replace("\\", "/")].encode())
     assert player_open._kiosk_mpris_names(
         ["chromium.instance4242", "vlc.instance77"]) == {"chromium.instance4242"}
 

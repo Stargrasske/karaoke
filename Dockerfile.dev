@@ -1,0 +1,34 @@
+# Dev/test image equivalent to `make install && make test`, for hosts where
+# make/bash/python3 with Unix-style venv paths aren't available (e.g. plain
+# Windows without WSL). Build once, then `docker run` to install + test
+# without needing a local Python/uv/make toolchain.
+#
+#   docker build -f Dockerfile.dev -t karaoke-dev .
+#   docker run --rm karaoke-dev                 # runs the test suite
+#   docker run --rm -it karaoke-dev bash        # interactive shell, deps pre-installed
+#
+# For local (non-container) Windows development, prefer `uv` directly (see
+# README.md) — this image is for parity/CI-style runs, not day-to-day editing.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src
+
+WORKDIR /app
+
+# Mirrors `make install`: upgrade pip, install requirements.txt, then the
+# karaoke package itself with its [dev] extras (pytest, responses).
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY pyproject.toml ./
+COPY src ./src
+COPY tests ./tests
+RUN pip install --no-cache-dir -e ".[dev]"
+
+# Mirrors `make test`: PYTHONPATH=src python -m pytest -v.
+# test_lockfile.py depends on the Unix-only fcntl module and is skipped in
+# non-Linux Python builds, but this image runs on Linux so it executes normally.
+CMD ["python", "-m", "pytest", "-v"]

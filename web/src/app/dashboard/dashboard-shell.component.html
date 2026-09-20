@@ -1,0 +1,60 @@
+<div class="dashboard-shell">
+  <nav class="dashboard-shell__tabs">
+    @for (dashboard of dashboards; track dashboard.name) {
+      <button
+        type="button"
+        class="dashboard-shell__tab"
+        [class.active]="dashboard.name === activeDashboard.name"
+        (click)="selectDashboard(dashboard.name)"
+      >
+        {{ dashboard.name }}
+        @if (dashboards.length > 1) {
+          <span class="dashboard-shell__tab-close" (click)="deleteDashboard(dashboard.name); $event.stopPropagation()">✕</span>
+        }
+      </button>
+    }
+    <button type="button" class="dashboard-shell__tab dashboard-shell__tab--new" (click)="createDashboard()">
+      + New
+    </button>
+    <button type="button" class="dashboard-shell__tab" (click)="showPalette = !showPalette">
+      {{ showPalette ? 'Hide palette' : 'Add widget' }}
+    </button>
+  </nav>
+
+  <button
+    type="button"
+    class="dashboard-shell__capture"
+    [class.dashboard-shell__capture--active]="captureState.isRecording()"
+    (click)="openCaptureStudio()"
+  >
+    <span class="dashboard-shell__capture-dot" aria-hidden="true"></span>
+    <strong>{{ captureState.isRecording() ? 'Recording live' : 'Capture idle' }}</strong>
+    @if (captureState.activeSession(); as session) {
+      <span>{{ session.source }} · {{ session.elapsed_s | number:'1.0-0' }}s · {{ session.audio_bytes | number }} bytes · {{ session.identified }}/{{ session.marks }} identified</span>
+      <span class="input-meter input-meter--compact" role="meter" aria-label="Microphone input level" aria-valuemin="0" aria-valuemax="100" [attr.aria-valuenow]="captureState.levelPercent()">
+        <span [style.width.%]="captureState.levelPercent()"></span>
+      </span>
+      <span>{{ captureState.levelLabel() }}</span>
+    } @else {
+      <span>{{ captureState.selectedSource() || 'Choose a source in Capture Studio' }}</span>
+    }
+  </button>
+
+  @if (showPalette) {
+    <app-add-widget-palette (add)="addWidget($event)"></app-add-widget-palette>
+  }
+
+  <gridster [options]="options" class="dashboard-shell__grid">
+    @for (widget of activeDashboard.widgets; track widget.id) {
+      <gridster-item [item]="asGridsterItem(widget)">
+        <app-widget-frame
+          [instance]="widget"
+          [maximized]="maximizedWidgetId === widget.id"
+          (maximizeToggle)="toggleMaximize(widget.id)"
+          (remove)="removeWidget(widget.id)"
+          (styleChange)="changeWidgetStyle(widget, $event)"
+        ></app-widget-frame>
+      </gridster-item>
+    }
+  </gridster>
+</div>

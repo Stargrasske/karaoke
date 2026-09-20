@@ -188,3 +188,38 @@ and a web dashboard read identical numbers.
 
 - [Library API](api.md) — read-only tracks, lyrics, stats, recordings inspection
 - [Folder scan CLI](makefile-targets.md) — `make folder-scan DIR=...`
+
+## CORS (web dashboard)
+
+The control API binds loopback, but a browser-based frontend (e.g. the Angular
+app at `karaoke/web/`) still needs CORS headers to call it cross-origin from the
+dev server or a packaged build. Allowed origins default to
+`http://localhost:4200` and are configurable via the comma-separated
+`KARAOKE_WEB_ORIGIN` environment variable.
+
+## Queue (mutable play queue)
+
+```
+GET   /api/queue                 list the active queue: [{index, artist, title, url, key, note}]
+POST  /api/queue                 append a track   body: {"artist": "...", "title": "...", "url": "..."?}
+DELETE /api/queue/{index}        remove one item at that position
+PATCH /api/queue/reorder         move an item      body: {"from_index": 2, "to_index": 0}
+```
+
+Backed by the same `active_queue_state` SQLite table the TUI's queue view reads
+and writes (`localcache.load_active_queue`/`save_active_queue`), so mutating the
+queue from the web dashboard is immediately visible to a running `karaoke-tui`.
+
+## Jobs (background task status)
+
+Endpoints that dispatch background work (`POST /api/recordings/{id}/analyse`,
+`POST /api/scan/folder` in non-dry-run mode, and the staging endpoints on the
+library API) now return a `job_id` alongside `status: "accepted"`. Poll:
+
+```
+GET /api/jobs/{job_id}   -> {"job_id", "status": "pending"|"running"|"done"|"error", "progress", "result", "error"}
+```
+
+The job registry is in-memory per-process (see `karaoke.jobs`), so a job created
+by the control API is only visible via the control API's `/api/jobs/{job_id}`,
+and a staging job created by the library API only via the library API's route.

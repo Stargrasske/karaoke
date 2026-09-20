@@ -1,0 +1,34 @@
+{
+  "id": "nostalgic-solo-01",
+  "title": "Old-time shuffle",
+  "feeling": "nostalgic",
+  "mode": "solo",
+  "characters": [
+    "sprite"
+  ],
+  "formation": "centered",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    340,
+    340,
+    340,
+    340,
+    340,
+    340,
+    340,
+    340
+  ],
+  "duration_ms": 2720,
+  "frames": [
+    "                                        \n                                        \n                                        \n                  {v_v}                 \n                    |                   \n                    |                   \n                  //*\\\\                 \n                 o  |  o                \n                   / \\                  \n                  /   \\                 \n                  _   _                 \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                 {v_v}                  \n                o  |                    \n                 \\-|-\\                  \n                   *  o                 \n                   |                    \n                  \\ /                   \n                   /                    \n                  _ _                   \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                o{v_v}                  \n                 \\\\|                    \n                   |                    \n                   *\\--o                \n                   |                    \n                 // \\                   \n                /    _                  \n                _                       \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                  {v_v}                 \n                    |  o                \n                  /-|-/                 \n                 o  *                   \n                    |                   \n                   / \\                  \n                  /   \\                 \n                 _     _                \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                  {v_v}                 \n                    |                   \n                    |                   \n                  //*\\\\                 \n                 o  |  o                \n                   / \\                  \n                  /   \\                 \n                  _   _                 \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                   {v_v}                \n                  o  |                  \n                   \\-|-\\                \n                     *  o               \n                     |                  \n                    \\ /                 \n                     /                  \n                    _ _                 \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                   {v_v}o               \n                     |//                \n                     |                  \n                 o--/*                  \n                     |                  \n                    / \\\\                \n                   _    \\               \n                        _               \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                  {v_v}                 \n                    |  o                \n                  /-|-/                 \n                 o  *                   \n                    |                   \n                   / \\                  \n                  /   \\                 \n                 _     _                \n                                        \n                                        \n                                        "
+  ]
+}

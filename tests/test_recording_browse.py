@@ -38,6 +38,20 @@ def _row(index=0, playable=True, silent=False, confident=True, title="Bambee!"):
             "playable": playable, "silent": silent}
 
 
+class _FakeOKResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _fake_ok_response(url, timeout=0):
+    return _FakeOKResponse()
+
+
 # --- navigation ------------------------------------------------------------
 
 def test_escape_at_the_top_level_closes(monkeypatch):
@@ -69,6 +83,7 @@ def test_selecting_a_track_opens_it_in_the_existing_window(monkeypatch):
     opened = []
     monkeypatch.setattr("karaoke.player_open.open_song_url",
                         lambda url, kind: opened.append((url, kind)))
+    monkeypatch.setattr("urllib.request.urlopen", _fake_ok_response)
     screen = _screen(rows=[_row(index=2)])
     monkeypatch.setattr(type(screen), "dismiss", lambda self, result=None: None)
     monkeypatch.setattr(type(screen), "app",
@@ -100,6 +115,7 @@ def test_a_silent_track_is_still_playable(monkeypatch):
     opened = []
     monkeypatch.setattr("karaoke.player_open.open_song_url",
                         lambda url, kind: opened.append(url))
+    monkeypatch.setattr("urllib.request.urlopen", _fake_ok_response)
     screen = _screen(rows=[_row(index=1, silent=True)])
     monkeypatch.setattr(type(screen), "dismiss", lambda self, result=None: None)
     monkeypatch.setattr(type(screen), "app",

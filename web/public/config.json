@@ -1,0 +1,4 @@
+{
+  "libraryApiUrl": "http://localhost:8000",
+  "controlApiUrl": "http://127.0.0.1:8765"
+}

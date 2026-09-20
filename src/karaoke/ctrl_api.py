@@ -22,9 +22,11 @@ from typing import Any, Optional, List, Dict
 from urllib.parse import quote_plus
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
+from . import jobs
 from .logger import log
 from .player_open import open_song_url
 
@@ -49,6 +51,20 @@ app = FastAPI(
     ),
     version=CTRL_API_VERSION,
     lifespan=lifespan,
+)
+
+# The control API binds to loopback, but the Angular dev server (a different
+# origin/port) still needs CORS headers to call it from the browser.
+_web_origins = [
+    origin.strip()
+    for origin in os.environ.get("KARAOKE_WEB_ORIGIN", "http://localhost:4200").split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_web_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -114,6 +130,7 @@ class SampleRequest(BaseModel):
     artist: Optional[str] = None
     title: Optional[str] = None
     seconds: Optional[float] = None
+    source: Optional[str] = None
 
 
 class PlayerControlRequest(BaseModel):
@@ -269,6 +286,42 @@ def stop_play_session(session_id: str) -> dict[str, Any]:
 # a container. Inspecting recordings is read-only over SQLite and stays there.
 
 
+@app.get("/api/record/devices")
+def record_devices() -> dict[str, Any]:
+    """List audio input devices this host can record from.
+
+    Windows only (DirectShow enumeration via ffmpeg) — on Linux the source is
+    resolved automatically from PipeWire/PulseAudio instead, so this always
+    returns an empty list there.
+    """
+    from . import audio_backend
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    if shutil.which("songrec"):
+        identification_backend = "songrec"
+    else:
+        from . import identify_shazamio
+        identification_backend = "shazamio" if identify_shazamio.available() else "unavailable"
+    if not audio_backend.IS_WINDOWS:
+        return {
+            "devices": [],
+            "platform": "linux",
+            "capture_backend": "PulseAudio / PipeWire",
+            "capture_mode": "system output",
+            "ffmpeg_path": ffmpeg_path,
+            "identification_backend": identification_backend,
+        }
+    devices = audio_backend.list_windows_audio_devices()
+    return {
+        "devices": devices,
+        "platform": "windows",
+        "capture_backend": "DirectShow",
+        "capture_mode": "microphone",
+        "ffmpeg_path": ffmpeg_path,
+        "identification_backend": identification_backend,
+    }
+
+
 @app.post("/api/record/start")
 def record_start(req: RecordRequest) -> dict[str, Any]:
     """Begin recording the playing output and marking what is on it."""
@@ -334,15 +387,21 @@ def record_status() -> dict[str, Any]:
 
     sessions = []
     for recording_id in recorder.active_sessions():
-        ok, total = recorder.mark_count(recording_id)
+        marks = recorder.load_marks(recording_id)
+        successful_marks = [mark for mark in marks if mark.ok]
+        latest = successful_marks[-1] if successful_marks else None
         directory = recorder.session_directory(recording_id)
         sessions.append({
             "recording_id": recording_id,
             "elapsed_s": recorder.elapsed(recording_id) or 0.0,
             "source": recorder.session_source(recording_id),
-            "marks": total,
-            "identified": ok,
+            "marks": len(marks),
+            "identified": len(successful_marks),
             "audio_bytes": recorder.directory_size(directory) if directory else 0,
+            "level_db": recorder.audio_level(recording_id),
+            "detected_artist": latest.artist if latest else None,
+            "detected_title": latest.title if latest else None,
+            "detected_at": latest.at_wall if latest else None,
         })
     return {"recording": sessions, "count": len(sessions)}
 
@@ -353,9 +412,9 @@ def record_analyse(recording_id: int, background: BackgroundTasks,
     """Decompile a recording into the database.
 
     Returns immediately: analysing a couple of hours takes minutes, which no
-    HTTP client should be asked to hold open. Poll
-    ``/api/recordings/{id}`` on the read-only API -- the status becomes
-    ``analysed`` when it finishes.
+    HTTP client should be asked to hold open. Poll ``/api/recordings/{id}`` on
+    the read-only API for the ``analysed`` status, or poll the returned
+    ``job_id`` via ``GET /api/jobs/{job_id}`` for pending/running/done/error.
     """
     from . import recorder, recording_worker
 
@@ -366,9 +425,10 @@ def record_analyse(recording_id: int, background: BackgroundTasks,
         raise HTTPException(status_code=409,
                             detail="Recording is still capturing; stop it first")
 
-    background.add_task(recording_worker.analyse, recording_id,
+    job_id = jobs.create_job()
+    background.add_task(jobs.run_job, job_id, recording_worker.analyse, recording_id,
                         keep=True if keep else None)
-    return {"status": "accepted", "recording_id": recording_id}
+    return {"status": "accepted", "recording_id": recording_id, "job_id": job_id}
 
 
 @app.delete("/api/recordings/{recording_id}/audio")
@@ -550,7 +610,7 @@ def sample_now(req: SampleRequest) -> dict[str, Any]:
     seconds = req.seconds or sample_audio.DEFAULT_SECONDS
     try:
         result = sample_audio.sample_and_analyse(
-            req.artist or "", req.title or "", seconds)
+            req.artist or "", req.title or "", seconds, source=req.source or "")
     except sample_audio.CaptureError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except sample_audio.AnalysisUnavailable as exc:
@@ -576,6 +636,7 @@ def sample_stream(
     artist: Optional[str] = Query(None),
     title: Optional[str] = Query(None),
     seconds: Optional[float] = Query(None),
+    source: Optional[str] = Query(None),
 ):
     """Stream live sample progress and result as Server-Sent Events.
 
@@ -611,7 +672,7 @@ def sample_stream(
 
         try:
             result = sample_audio.sample_and_analyse(
-                art, tit, sec, should_continue=progress)
+                art, tit, sec, source=source or "", should_continue=progress)
             events.put(("complete", {"status": "analysed",
                                     "artist": art,
                                     "title": tit,
@@ -770,7 +831,10 @@ def scan_folder(req: FolderScanRequest, background: BackgroundTasks) -> dict[str
         )
         return {"status": "preview", **stats}
 
+    job_id = jobs.create_job()
     background.add_task(
+        jobs.run_job,
+        job_id,
         folder_scan.scan_and_ingest_folder,
         root,
         use_fingerprint=req.use_fingerprint,
@@ -779,7 +843,7 @@ def scan_folder(req: FolderScanRequest, background: BackgroundTasks) -> dict[str
         dry_run=False,
         limit=req.limit,
     )
-    return {"status": "accepted", "dir": str(root)}
+    return {"status": "accepted", "dir": str(root), "job_id": job_id}
 
 
 @app.post("/api/audio/cut")
@@ -927,6 +991,99 @@ def stage_state() -> dict[str, Any]:
     from . import stage_view
 
     return stage_view.get_stage_state()
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str) -> dict[str, Any]:
+    """Poll status for a background job returned by an `accepted`-status endpoint."""
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+class EnqueueRequest(BaseModel):
+    artist: str
+    title: str
+    url: Optional[str] = None
+
+
+class QueueReorderRequest(BaseModel):
+    from_index: int
+    to_index: int
+
+
+def _queue_rows() -> tuple[str, str, int, List[Dict[str, Any]]]:
+    from . import localcache
+
+    saved = localcache.load_active_queue()
+    if not saved:
+        return "", "", 0, []
+    return (
+        saved.get("playlist_id", ""),
+        saved.get("name", ""),
+        saved.get("current_index", 0),
+        list(saved.get("rows", [])),
+    )
+
+
+def _queue_item_view(row: Dict[str, Any], index: int) -> dict[str, Any]:
+    return {
+        "index": index,
+        "artist": row.get("artist", ""),
+        "title": row.get("title", ""),
+        "url": row.get("url") or None,
+        "key": row.get("key") or None,
+        "note": row.get("genre") or None,
+    }
+
+
+@app.get("/api/queue")
+def get_queue() -> dict[str, Any]:
+    """The mutable play queue, shared with the TUI via the active_queue_state table."""
+    _, _, _, rows = _queue_rows()
+    items = [_queue_item_view(row, i) for i, row in enumerate(rows)]
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/queue")
+def enqueue_track(req: EnqueueRequest) -> dict[str, Any]:
+    """Append a track to the end of the active queue."""
+    from . import localcache
+
+    playlist_id, name, current_index, rows = _queue_rows()
+    rows.append({"artist": req.artist, "title": req.title, "url": req.url or ""})
+    localcache.save_active_queue(playlist_id, name, rows, current_index)
+    return _queue_item_view(rows[-1], len(rows) - 1)
+
+
+@app.delete("/api/queue/{index}")
+def remove_from_queue(index: int) -> dict[str, Any]:
+    """Remove one item from the active queue by its position."""
+    from . import localcache
+
+    playlist_id, name, current_index, rows = _queue_rows()
+    if index < 0 or index >= len(rows):
+        raise HTTPException(status_code=404, detail="Queue index out of range")
+    rows.pop(index)
+    if current_index > index:
+        current_index -= 1
+    localcache.save_active_queue(playlist_id, name, rows, current_index)
+    return {"status": "removed", "index": index}
+
+
+@app.patch("/api/queue/reorder")
+def reorder_queue(req: QueueReorderRequest) -> dict[str, Any]:
+    """Move one queued item from one position to another."""
+    from . import localcache
+
+    playlist_id, name, current_index, rows = _queue_rows()
+    if not (0 <= req.from_index < len(rows)) or not (0 <= req.to_index < len(rows)):
+        raise HTTPException(status_code=404, detail="Queue index out of range")
+    item = rows.pop(req.from_index)
+    rows.insert(req.to_index, item)
+    localcache.save_active_queue(playlist_id, name, rows, current_index)
+    return {"items": [_queue_item_view(row, i) for i, row in enumerate(rows)], "count": len(rows)}
 
 
 def main() -> None:

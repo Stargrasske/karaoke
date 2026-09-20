@@ -63,9 +63,16 @@ def test_start_records_the_playing_monitor(db, monkeypatch):
         assert session.source == "bluez.monitor"
         assert "bluez.monitor" in seen["cmd"]
         assert "flac" in " ".join(seen["cmd"])
+        assert "ebur128=peak=true:framelog=verbose" in seen["cmd"]
         assert session.directory.is_dir()
     finally:
         recorder.stop(session.recording_id)
+
+
+def test_parse_momentary_audio_level():
+    line = "[Parsed_ebur128_0] t: 2.9 M: -24.7 S: -30.2 I: -28.0 LUFS"
+    assert recorder._parse_level(line) == pytest.approx(-24.7)
+    assert recorder._parse_level("M: -inf S: -inf") is None
 
 
 def test_start_refuses_when_nothing_is_playing(db, monkeypatch):

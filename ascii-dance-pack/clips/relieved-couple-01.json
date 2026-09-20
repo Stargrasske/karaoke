@@ -1,0 +1,35 @@
+{
+  "id": "relieved-couple-01",
+  "title": "Shared relief sway",
+  "feeling": "relieved",
+  "mode": "couple",
+  "characters": [
+    "robot",
+    "round"
+  ],
+  "formation": "joined inside hands",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    320,
+    320,
+    320,
+    320,
+    320,
+    320,
+    320,
+    320
+  ],
+  "duration_ms": 2560,
+  "frames": [
+    "                                        \n                                        \n                                        \n             [-u-]     (-u-)            \n             /\\|/\\     /\\|/\\            \n               |  \\\\ //  |              \n               #    o    |              \n               |         |              \n              | |       | |             \n              | |       | |             \n              = =       _ _             \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            [-u-]     (-u-)             \n              |         |               \n             o|         |o              \n            //#\\---o---/|\\\\             \n              |         |               \n            |/ \\|     |/ \\|             \n            =   =     _   _             \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n            [-u-]     (-u-)             \n              |         |               \n             /|\\       /|\\              \n            / # ---o--- | \\             \n            / |         | \\             \n           o / \\       / \\ o            \n            /   \\     /   \\             \n            =   =     _   _             \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n                                        \n             [-u-]     (-u-)            \n               |         |              \n            //-|-\\\\   //-|-\\\\           \n           o   #   \\o/   |   o          \n               |         |              \n              / \\       / \\             \n              / \\       / \\             \n             =   =     _   _            \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             [-u-]     (-u-)            \n               |         |              \n               |         |              \n             //#\\---o---/|\\\\            \n            o  |         |  o           \n              / \\       / \\             \n              / \\       / \\             \n             =   =     _   _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n              [-u-]     (-u-)           \n                |         |             \n                |         |             \n              -o#\\---o---/|o-           \n                |         |             \n               | |       | |            \n               | |       | |            \n               = =       _ _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n              [-u-]     (-u-)           \n                |         |             \n              /-|-\\\\   //-|-\\           \n            o/  #   \\o/   |  \\o         \n                |         |             \n               / \\       / \\            \n              /   \\     /   \\           \n              =   =     _   _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             [-u-]     (-u-)            \n               |         |              \n               |         |              \n             //#\\---o---/|\\\\            \n            o  |         |  o           \n              / \\       / \\             \n              / \\       / \\             \n             =   =     _   _            \n                                        \n                                        \n                                        "
+  ]
+}

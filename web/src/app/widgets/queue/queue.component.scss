@@ -1,0 +1,114 @@
+.detected-song {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-inline-start: 3px solid var(--widget-accent);
+  background: var(--widget-control);
+}
+
+.detected-song > div:first-child {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.detected-song__label {
+  color: var(--widget-accent);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+}
+
+.detected-song--idle {
+  margin: 0;
+  color: var(--widget-muted);
+  font-size: var(--text-sm);
+}
+
+.detected-lyrics {
+  min-height: 0;
+  border-block: 1px solid var(--widget-border);
+}
+
+.detected-lyrics__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-block: var(--space-2);
+}
+
+.detected-lyrics pre {
+  max-height: 14rem;
+  margin: 0;
+  padding-block: var(--space-2);
+  overflow: auto;
+  color: var(--widget-text);
+  font: inherit;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.detected-lyrics--live {
+  display: grid;
+  gap: var(--space-2);
+  padding-block-end: var(--space-2);
+}
+
+.detected-lyrics__line {
+  margin: 0;
+  color: var(--widget-muted);
+  line-height: 1.4;
+}
+
+.detected-lyrics__line--past {
+  opacity: 0.45;
+}
+
+.detected-lyrics__line--active {
+  color: var(--widget-heading);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.detected-lyrics__word--active {
+  padding: 0 0.08rem;
+  border-radius: 0.12rem;
+  background: var(--widget-accent);
+  color: var(--widget-accent-contrast);
+}
+
+.sync-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.sync-controls button {
+  min-height: 1.75rem;
+  padding-inline: var(--space-2);
+  font-size: var(--text-xs);
+}
+
+.episode-badge {
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--widget-border);
+  border-radius: var(--radius-pill);
+  color: var(--color-success);
+  font-size: var(--text-xs);
+}
+
+.episode-badge--music {
+  color: var(--color-focus);
+}
+
+.musical-episode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 4rem;
+  border: 1px dashed var(--widget-accent);
+  color: var(--widget-accent);
+}

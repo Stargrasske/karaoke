@@ -1,0 +1,35 @@
+{
+  "id": "tender-couple-01",
+  "title": "Reassuring handhold",
+  "feeling": "tender",
+  "mode": "couple",
+  "characters": [
+    "cat",
+    "sprite"
+  ],
+  "formation": "joined inside hands",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    380,
+    380,
+    380,
+    380,
+    380,
+    380,
+    380,
+    380
+  ],
+  "duration_ms": 3040,
+  "frames": [
+    "                                        \n                                        \n                                        \n             /-u-\\     {-u-}            \n               |         |              \n               |         |              \n             //|\\---o---/*\\\\            \n            o  |~        |  o           \n              / \\       / \\             \n              / \\       / \\             \n             _   _     _   _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            /-u-\\     {-u-}             \n              |         |               \n              |         |               \n            -o|\\---o---/*o-             \n              |~        |               \n             | |       | |              \n             | |       | |              \n             _ _       _ _              \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            /-u-\\     {-u-}             \n              |         |               \n            /-|-\\\\   //-|-\\             \n          o/  |   \\o/   *  \\o           \n              |~        |               \n             / \\       / \\              \n            /   \\     /   \\             \n            _   _     _   _             \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             /-u-\\     {-u-}            \n               |         |              \n              o|         |o             \n             //|\\---o---/*\\\\            \n               |~        |              \n             |/ \\|     |/ \\|            \n             _   _     _   _            \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             /-u-\\     {-u-}            \n               |         |              \n               |         |              \n             //|\\---o---/*\\\\            \n            o  |~        |  o           \n              / \\       / \\             \n              / \\       / \\             \n             _   _     _   _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n              /-u-\\     {-u-}           \n                |         |             \n                |         |             \n              -o|\\---o---/*o-           \n                |~        |             \n               | |       | |            \n               | |       | |            \n               _ _       _ _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n              /-u-\\     {-u-}           \n                |         |             \n              /-|-\\\\   //-|-\\           \n            o/  |   \\o/   *  \\o         \n                |~        |             \n               / \\       / \\            \n              /   \\     /   \\           \n              _   _     _   _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             /-u-\\     {-u-}            \n               |         |              \n              o|         |o             \n             //|\\---o---/*\\\\            \n               |~        |              \n             |/ \\|     |/ \\|            \n             _   _     _   _            \n                                        \n                                        \n                                        \n                                        "
+  ]
+}

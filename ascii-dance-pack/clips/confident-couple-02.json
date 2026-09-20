@@ -1,0 +1,35 @@
+{
+  "id": "confident-couple-02",
+  "title": "Disco challenge",
+  "feeling": "confident",
+  "mode": "couple",
+  "characters": [
+    "round",
+    "robot"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    210,
+    210,
+    210,
+    210,
+    210,
+    210,
+    210,
+    210
+  ],
+  "duration_ms": 1680,
+  "frames": [
+    "                                        \n                                        \n                                        \n           (>_>)         [>_>]          \n             |             |  o         \n             |           /-|-/          \n           //|\\\\        o  #            \n          o  |  o          |            \n            / \\           \\ /           \n            / \\            \\            \n           _   _          = =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           (>_>)         [>_>]          \n             |  o       o  |            \n           /-|-/         \\-|-\\          \n          o  |             #  o         \n             |             |            \n            / \\           / \\           \n           /   \\         /   \\          \n          _     _       =     =         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            (>_>)       [>_>]           \n           o  |           |             \n            \\-|-\\         |             \n              |  o      //#\\\\           \n              |        o  |  o          \n             \\ /         / \\            \n              /         /   \\           \n             _ _        =   =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            (>_>)       [>_>]           \n              |  o     o  |             \n            /-|-/       \\-|-\\           \n           o  |           #  o          \n              |           |             \n             / \\         / \\            \n            /   \\       /   \\           \n           _     _     =     =          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           (>_>)         [>_>]          \n             |             |  o         \n             |           /-|-/          \n           //|\\\\        o  #            \n          o  |  o          |            \n            / \\           \\ /           \n            / \\            \\            \n           _   _          = =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           (>_>)         [>_>]          \n             |  o       o  |            \n           /-|-/         \\-|-\\          \n          o  |             #  o         \n             |             |            \n            / \\           / \\           \n           /   \\         /   \\          \n          _     _       =     =         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          (>_>)           [>_>]         \n         o  |               |           \n          \\-|-\\             |           \n            |  o          //#\\\\         \n            |            o  |  o        \n           \\ /             / \\          \n            /             /   \\         \n           _ _            =   =         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          (>_>)           [>_>]         \n            |  o         o  |           \n          /-|-/           \\-|-\\         \n         o  |               #  o        \n            |               |           \n           / \\             / \\          \n          /   \\           /   \\         \n         _     _         =     =        \n                                        \n                                        \n                                        "
+  ]
+}

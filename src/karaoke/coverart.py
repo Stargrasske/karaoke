@@ -49,7 +49,16 @@ def art_path_from_url(art_url: str) -> Optional[Path]:
     parsed = urlparse(art_url)
     if parsed.scheme not in ("file", ""):
         return None                      # remote art is not fetched here
-    path = Path(unquote(parsed.path or art_url))
+    if parsed.scheme == "file":
+        # Windows file:// URLs put the drive letter in netloc, not path (no
+        # slash follows the double-slash before "C:"), and url2pathname
+        # unquotes %-escapes while converting to this platform's separators
+        # (a no-op split/join on POSIX, so existing Linux behaviour is
+        # unchanged).
+        from urllib.request import url2pathname
+        path = Path(url2pathname(parsed.netloc + parsed.path))
+    else:
+        path = Path(unquote(art_url))
     return path if path.is_file() else None
 
 

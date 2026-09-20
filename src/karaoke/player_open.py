@@ -452,6 +452,9 @@ def cdp_toggle_repeat() -> bool:
 _PLAYBACK_JS = """(() => {
   const v = document.querySelector('video');
   const bar = document.querySelector('ytmusic-player-bar');
+    const media = ('mediaSession' in navigator) ? navigator.mediaSession.metadata : null;
+    const titleNode = bar ? bar.querySelector('.title') : null;
+    const artistNode = bar ? bar.querySelector('.byline a, .subtitle a, .byline') : null;
   const isCasting = bar ? (bar.castConnectionState === 'CONNECTED' || bar.castConnectionState === 'CONNECTING') : false;
   if (isCasting && v && !v.muted) {
     v.muted = true;
@@ -466,7 +469,11 @@ _PLAYBACK_JS = """(() => {
     readyState: v.readyState || 0,
     muted: !!v.muted,
     casting: isCasting,
-    url: location.href
+        url: location.href,
+        artist: (media && media.artist) || (artistNode && artistNode.textContent || '').trim(),
+        title: (media && media.title) || (titleNode && titleNode.textContent || '').trim(),
+        album: (media && media.album) || '',
+        artUrl: (media && media.artwork && media.artwork.length ? media.artwork[media.artwork.length - 1].src : '')
   });
 })()"""
 
@@ -477,8 +484,7 @@ _last_kiosk_dismiss: float = 0.0
 def browser_playback(timeout: float = 0.2) -> "dict | None":
     """What the kiosk browser's video element is doing, or None.
 
-    Returns ``present``, ``ended``, ``paused``, ``position``, ``duration``,
-    ``readyState``, ``muted``, ``casting``, and ``url``.
+    Returns playback timing/state plus Media Session or player-bar metadata.
     """
     global _last_kiosk_dismiss
     import json

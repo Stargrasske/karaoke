@@ -1,0 +1,35 @@
+{
+  "id": "silly-couple-02",
+  "title": "Silly copycat",
+  "feeling": "silly",
+  "mode": "couple",
+  "characters": [
+    "sprite",
+    "cat"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    170,
+    170,
+    170,
+    170,
+    170,
+    170,
+    170,
+    170
+  ],
+  "duration_ms": 1360,
+  "frames": [
+    "                                        \n                         /o_O\\          \n                        o  |            \n           {o_O}         \\-|-\\          \n          o  |             |  o         \n           \\-|-\\           |~           \n             *  o         / \\           \n             |           /   \\          \n            \\ /         _     _         \n             /                          \n            _ _                         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n          o{o_O}         /o_O\\o         \n           \\ |             | /          \n            \\|\\           /|/           \n             * --o     o-- |            \n            /|             |~           \n           /  \\           /  \\          \n          /    _         _    \\         \n          _                   _         \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n            {o_O}                       \n            | |                         \n            |-|-|       /o_O\\           \n              * |         |  o          \n              |--_      /-|-/           \n            |/         o  |             \n            |             |~            \n            _            \\ /            \n                          \\             \n                         _ _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n            {o_O}o      /o_O\\o          \n              | /         | /           \n             /|/         /|/            \n          o-- *       o-- |             \n              |\\          |~            \n             /  \\        /  \\           \n            _   \\       _   \\           \n                 _           _          \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                         /o_O\\          \n                           | |          \n           {o_O}         |-|-|          \n          o  |           | |            \n           \\-|-\\        _--|~           \n             *  o           \\|          \n             |               |          \n            \\ /              _          \n             /                          \n            _ _                         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n           {o_O}        o/o_O\\          \n             | |         \\ |            \n           |-|-|          \\|\\           \n           | *             | --o        \n          _--|\\           /|~           \n               |         /  \\           \n               |        /    _          \n               _        _               \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n          {o_O}                         \n            |  o                        \n          /-|-/           /o_O\\         \n         o  *               |  o        \n            |             /-|-/         \n           / \\           o  |           \n          /   \\             |~          \n         _     _           \\ /          \n                            \\           \n                           _ _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n         o{o_O}           /o_O\\         \n          \\ |             | |           \n           \\|\\            |-|-|         \n            * --o           | |         \n           /|              /|~-_        \n          /  \\            |             \n          /   _           |             \n         _                _             \n                                        \n                                        \n                                        \n                                        "
+  ]
+}

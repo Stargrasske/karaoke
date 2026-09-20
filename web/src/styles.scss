@@ -1,0 +1,79 @@
+:root {
+	--color-page: #101419;
+	--color-surface: #171d23;
+	--color-surface-raised: #202830;
+	--color-control: #29343d;
+	--color-border: #3b4852;
+	--color-text: #f2f5f7;
+	--color-muted: #a9b5bd;
+	--color-accent: #48c9b0;
+	--color-accent-contrast: #071512;
+	--color-success: #58d68d;
+	--color-danger: #ff6b6b;
+	--color-focus: #f4d35e;
+	--font-display: 'Aptos Display', 'Trebuchet MS', sans-serif;
+	--font-body: 'Aptos', 'Segoe UI', sans-serif;
+	--font-mono: 'Cascadia Code', 'Consolas', monospace;
+	--text-xs: 0.72rem;
+	--text-sm: 0.82rem;
+	--text-md: 0.95rem;
+	--text-lg: 1.15rem;
+	--space-1: 0.25rem;
+	--space-2: 0.5rem;
+	--space-3: 0.75rem;
+	--space-4: 1rem;
+	--radius-sm: 0.25rem;
+	--radius-md: 0.5rem;
+	--radius-pill: 999px;
+	--control-height: 2rem;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+	margin: 0;
+	min-height: 100%;
+	background: var(--color-page);
+	color: var(--color-text);
+	font-family: var(--font-body);
+}
+
+button,
+input,
+select { letter-spacing: 0; }
+
+.widget-frame[data-widget-style='ascii'] {
+	--widget-surface: #050806;
+	--widget-control: #0d1710;
+	--widget-border: #2f7d45;
+	--widget-text: #9df7ad;
+	--widget-heading: #d2ffd9;
+	--widget-muted: #70b77e;
+	--widget-accent: #73ff8f;
+	--widget-accent-contrast: #061008;
+	--widget-font: var(--font-mono);
+	border-radius: 0;
+}
+
+.input-meter {
+	display: block;
+	width: 100%;
+	height: 0.55rem;
+	overflow: hidden;
+	border-radius: var(--radius-pill);
+	background: var(--color-control);
+}
+
+.input-meter > span {
+	display: block;
+	height: 100%;
+	min-width: 0.15rem;
+	background: linear-gradient(90deg, var(--color-success) 0 65%, var(--color-focus) 80%, var(--color-danger) 100%);
+	transition: width 180ms linear;
+}
+
+.input-meter--compact {
+	flex: 1 1 8rem;
+	max-width: 14rem;
+}

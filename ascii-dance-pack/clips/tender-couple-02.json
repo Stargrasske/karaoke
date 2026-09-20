@@ -1,0 +1,35 @@
+{
+  "id": "tender-couple-02",
+  "title": "Gentle mirror steps",
+  "feeling": "tender",
+  "mode": "couple",
+  "characters": [
+    "robot",
+    "round"
+  ],
+  "formation": "mirrored two-frame call-and-response",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    380,
+    380,
+    380,
+    380,
+    380,
+    380,
+    380,
+    380
+  ],
+  "duration_ms": 3040,
+  "frames": [
+    "                                        \n                                        \n                                        \n           [-u-]         (-u-)          \n             |             |            \n             |           /-|-\\          \n           //#\\\\       o/  |  \\o        \n          o  |  o          |            \n            / \\           / \\           \n            / \\           / \\           \n           =   =         _   _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [-u-]         (-u-)          \n             |             |            \n             |         o---|---o        \n           -o#o-           |            \n             |             |            \n            | |         /// \\           \n            | |        _    \\           \n            = =              _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            [-u-]       (-u-)           \n              |           |             \n            /-|-\\         |             \n          o/  #  \\o     //|\\\\           \n              |        o  |  o          \n             / \\         / \\            \n            /   \\       /   \\           \n            =   =       _   _           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            [-u-]       (-u-)           \n              |           |             \n          o---|---o       |             \n              #         -o|o-           \n              |           |             \n           /// \\         | |            \n          =     \\        | |            \n                =        _ _            \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [-u-]         (-u-)          \n             |             |            \n             |           /-|-\\          \n           //#\\\\       o/  |  \\o        \n          o  |  o          |            \n            / \\           / \\           \n            / \\           / \\           \n           =   =         _   _          \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n           [-u-]         (-u-)          \n             |             |            \n             |         o---|---o        \n           -o#o-           |            \n             |             |            \n            | |           / \\\\\\         \n            | |           /    _        \n            = =          _              \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          [-u-]           (-u-)         \n            |               |           \n          /-|-\\             |           \n        o/  #  \\o         //|\\\\         \n            |            o  |  o        \n           / \\             / \\          \n          /   \\           /   \\         \n          =   =           _   _         \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n          [-u-]           (-u-)         \n            |               |           \n        o---|---o           |           \n            #             -o|o-         \n            |               |           \n           / \\\\\\           | |          \n          /     =          | |          \n          =                _ _          \n                                        \n                                        \n                                        "
+  ]
+}

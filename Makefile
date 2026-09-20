@@ -32,7 +32,7 @@ K8S_NAMESPACE ?= karaoke
 
 .PHONY: help venv install install-confluence docs docs-live docs-write docs-audit docs-sync docs-confluence-prep \
         docs-confluence-publish deps-make2graph view_makeflow lint format \
-        test test-audio mic-test stats clean clean-tools browse tui browse-log \
+		test test-audio mic-test stats clean clean-tools browse tui browse-log dev \
         install-audio analyze api ctrl-api \
         k8s-build k8s-load k8s-deploy k8s-seed-db k8s-status k8s-logs k8s-undeploy \
         upgrade-timings upgrade-timings-dry-run \
@@ -200,6 +200,9 @@ api: ## Launch the FastAPI library backend (read-only: tracks, lyrics, stats)
 
 ctrl-api: ## Launch the host-side control API (playback; needs a desktop session)
 	$(PYTHON) -m karaoke.ctrl_api
+
+dev: ## Launch both APIs and the Angular dashboard
+	$(PYTHON) scripts/dev.py
 
 k8s-build: ## Build the library API container image
 	# --network=host: the default docker bridge has no working DNS on this host,

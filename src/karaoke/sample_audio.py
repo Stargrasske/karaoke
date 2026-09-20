@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from .audio_backend import IS_WINDOWS, ffmpeg_input_args
 from .logger import log
 
 # Long enough for a stable key estimate and a few tempo periods, short enough
@@ -129,6 +130,7 @@ def capture(seconds: float = DEFAULT_SECONDS, *, dest: Optional[Path] = None,
     if not shutil.which("ffmpeg"):
         raise CaptureError("ffmpeg is not installed")
 
+    windows_device = IS_WINDOWS and bool(source)
     src = source or monitor_source()
     if not src:
         raise CaptureError("nothing is playing; no output to record")
@@ -137,7 +139,7 @@ def capture(seconds: float = DEFAULT_SECONDS, *, dest: Optional[Path] = None,
         tempfile.mkstemp(prefix="karaoke-sample-", suffix=".wav")[1])
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "pulse", "-i", src,
+        *ffmpeg_input_args(src, windows_device=windows_device),
         "-t", str(seconds), "-ac", "2", "-ar", "44100",
         str(target),
     ]
@@ -266,10 +268,10 @@ def analyse_sample(sample: Sample, artist: str = "", title: str = "",
 
 def sample_and_analyse(artist: str = "", title: str = "",
                        seconds: float = DEFAULT_SECONDS,
-                       *, keep: bool = False, conn=None,
+                       *, source: str = "", keep: bool = False, conn=None,
                        should_continue: "Callable[[], bool] | None" = None) -> "object":
     """Record the playing output and analyse it. Deletes the file unless kept."""
-    sample = capture(seconds, should_continue=should_continue)
+    sample = capture(seconds, source=source, should_continue=should_continue)
     try:
         return analyse_sample(sample, artist, title, conn=conn)
     finally:

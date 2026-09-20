@@ -15,11 +15,71 @@ from typing import Any, AsyncGenerator, Optional
 
 from .logger import log
 from .lyrics import parse_enhanced_lrc
+from .player import DEFAULT_WORD_S, GAP_MIN_S, MAX_LINE_S, MIN_LINE_S
+
+
+def _lyric_episode(lines: list[dict[str, Any]], position_s: float) -> dict[str, Any]:
+  """Current vocal/instrumental episode derived from synchronized lyric gaps."""
+  if not lines:
+    return {"kind": "unknown", "label": "No timed lyrics", "start": None, "end": None}
+  if position_s < lines[0]["time"]:
+    return {
+      "kind": "intro",
+      "label": "Instrumental intro",
+      "start": 0.0,
+      "end": lines[0]["time"],
+    }
+
+  active_index = max(
+    (index for index, line in enumerate(lines) if line["time"] <= position_s),
+    default=-1,
+  )
+  if active_index < 0:
+    return {"kind": "unknown", "label": "Waiting", "start": None, "end": None}
+
+  line = lines[active_index]
+  next_start = lines[active_index + 1]["time"] if active_index + 1 < len(lines) else None
+  word_count = max(1, len(str(line.get("text") or "").split()))
+  inferred_end = line["time"] + min(MAX_LINE_S, max(MIN_LINE_S, word_count * DEFAULT_WORD_S))
+  explicit_end = line.get("end")
+  vocal_end = min(
+    value for value in (explicit_end, inferred_end, next_start) if value is not None
+  )
+
+  if position_s <= vocal_end:
+    return {
+      "kind": "vocals",
+      "label": "Vocals",
+      "start": line["time"],
+      "end": vocal_end,
+      "line_index": active_index,
+    }
+  if next_start is not None and next_start - vocal_end >= GAP_MIN_S:
+    return {
+      "kind": "instrumental",
+      "label": "Instrumental break",
+      "start": vocal_end,
+      "end": next_start,
+    }
+  if next_start is None:
+    return {
+      "kind": "outro",
+      "label": "Instrumental outro",
+      "start": vocal_end,
+      "end": None,
+    }
+  return {
+    "kind": "vocals",
+    "label": "Vocals",
+    "start": line["time"],
+    "end": next_start,
+    "line_index": active_index,
+  }
 
 
 def get_stage_state() -> dict[str, Any]:
     """Gather live playback, lyrics, queue, and audio analysis state for the stage display."""
-    from . import localcache, player_open, playerctl
+    from . import localcache, player_open, playerctl, recorder
 
     # 1. Determine playback state and position
     artist = ""
@@ -44,14 +104,18 @@ def get_stage_state() -> dict[str, Any]:
         url = str(b_state.get("url") or "")
         is_casting = bool(b_state.get("casting"))
         status = "Paused" if b_state.get("paused") else "Playing"
+        artist = str(b_state.get("artist") or "")
+        title = str(b_state.get("title") or "")
+        album = str(b_state.get("album") or "")
+        art_url = str(b_state.get("artUrl") or "")
 
     # Query MPRIS for artist/title/art
     active_player = playerctl.playing_player() or ""
     meta = playerctl.current_metadata(active_player) if active_player else None
     if meta:
-        artist = meta.artist or ""
-        title = meta.title or ""
-        album = meta.album or ""
+        artist = meta.artist or artist
+        title = meta.title or title
+        album = meta.album or album
         if not url:
             url = meta.url or ""
         if duration <= 0.0 and meta.duration:
@@ -64,8 +128,23 @@ def get_stage_state() -> dict[str, Any]:
             except Exception:
                 pass
         if active_player:
-            art_url = playerctl.art_url(active_player) or ""
+            art_url = playerctl.art_url(active_player) or art_url
             status = playerctl.status(active_player) or status
+
+    # A room/microphone recording has no desktop-player metadata. Its latest
+    # Shazam marker still provides a track identity and an estimated playhead.
+    if not (artist and title):
+        try:
+            active_recordings = recorder.active_sessions()
+            marks = recorder.load_marks(active_recordings[0]) if active_recordings else []
+            latest = next((mark for mark in reversed(marks) if mark.ok), None)
+            if latest:
+                artist = latest.artist
+                title = latest.title
+                position_s = max(0.0, time.time() - latest.start_estimate)
+                status = "Playing"
+        except Exception as exc:
+            log.debug("stage_view: recorder detection lookup failed: %s", exc)
 
     # 2. Look up lyrics and audio analysis from local database
     lines: list[dict[str, Any]] = []
@@ -138,13 +217,14 @@ def get_stage_state() -> dict[str, Any]:
     except Exception:
         pass
 
-    # 4. Find active line index and countdown to next line
+    # 4. Find active line index, countdown and musical episode.
+    episode = _lyric_episode(lines, position_s)
     active_line_idx = -1
     next_line_in: Optional[float] = None
     for idx, line in enumerate(lines):
         t = line["time"]
         end_t = line.get("end")
-        if t <= position_s:
+        if t <= position_s and episode["kind"] == "vocals":
             if end_t is None or position_s <= end_t:
                 active_line_idx = idx
         elif t > position_s:
@@ -165,6 +245,7 @@ def get_stage_state() -> dict[str, Any]:
         "energy": energy,
         "active_line_index": active_line_idx,
         "next_line_in": next_line_in,
+        "episode": episode,
         "lines": lines,
         "upcoming_queue": upcoming_queue,
         "timestamp": time.time(),

@@ -1,0 +1,35 @@
+{
+  "id": "anxious-couple-01",
+  "title": "Reassuring tiny steps",
+  "feeling": "anxious",
+  "mode": "couple",
+  "characters": [
+    "round",
+    "robot"
+  ],
+  "formation": "joined inside hands",
+  "width": 40,
+  "height": 14,
+  "loop": true,
+  "durations_ms": [
+    160,
+    160,
+    160,
+    320,
+    160,
+    160,
+    160,
+    320
+  ],
+  "duration_ms": 1600,
+  "frames": [
+    "                                        \n                                        \n                                        \n             (o_o)     [o_o]            \n               |         |              \n               |         |              \n             -o|\\---o---/#o-            \n               |         |              \n              | |       | |             \n              | |       | |             \n              _ _       = =             \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n            (o_o)     [o_o]             \n              |         |               \n             o|         |o              \n            //|\\---o---/#\\\\             \n              |         |               \n            |/ \\|     |/ \\|             \n            _   _     =   =             \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             (o_o)     [o_o]            \n            o  |         |  o           \n             \\-|-\\\\   //-|-/            \n               |   \\o/   #              \n               |         |              \n              \\ /       \\ /             \n               /         \\              \n              _ _       = =             \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             (o_o)     [o_o]            \n               |         |              \n               |         |              \n             -o|\\---o---/#o-            \n               |         |              \n              | |       | |             \n              | |       | |             \n              _ _       = =             \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             (o_o)     [o_o]            \n               |         |              \n               |         |              \n             -o|\\---o---/#o-            \n               |         |              \n              | |       | |             \n              | |       | |             \n              _ _       = =             \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n              (o_o)     [o_o]           \n                |         |             \n               o|         |o            \n              //|\\---o---/#\\\\           \n                |         |             \n              |/ \\|     |/ \\|           \n              _   _     =   =           \n                                        \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             (o_o)     [o_o]            \n               |         |              \n             /-|-\\\\   //-|-\\            \n            o  |   \\o/   #  o           \n               |         |              \n              / \\       / \\             \n             /   \\     /   \\            \n            _     _   =     =           \n                                        \n                                        \n                                        ",
+    "                                        \n                                        \n                                        \n             (o_o)     [o_o]            \n               |         |              \n               |         |              \n             -o|\\---o---/#o-            \n               |         |              \n              | |       | |             \n              | |       | |             \n              _ _       = =             \n                                        \n                                        \n                                        "
+  ]
+}

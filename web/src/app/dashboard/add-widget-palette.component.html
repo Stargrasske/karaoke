@@ -1,0 +1,10 @@
+<div class="palette">
+  <h4>Add widget</h4>
+  <ul>
+    @for (entry of entries; track entry.type + entry.style) {
+      <li>
+        <button type="button" (click)="onAdd(entry.type, entry.style)">{{ entry.label }}</button>
+      </li>
+    }
+  </ul>
+</div>
