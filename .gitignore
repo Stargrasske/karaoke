@@ -29,3 +29,5 @@ docs_confluence/
 .claude/
 optimize_karaoke_credit_usage
 scripts/tst-gemi.py.py
+
+*.log
