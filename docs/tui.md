@@ -61,6 +61,9 @@ Pressing `D` opens the interactive **AI DJ Booth**:
 - **Persistent `dj-list` Playlist**: Tracks added via the DJ are stored in PostgreSQL under the canonical `dj-list` playlist.
 - **Live Player Sync & Follow**: Pressing `[🎧 Follow DJ]` or running `/follow-dj` loads `dj-list` directly into the live player queue and tracks playback changes.
 - **Commands**:
+  - `/mood <vibe>`: Build a set from a feeling or a description — `/mood upbeat
+    happy electronic`, `/mood cynical pop`, `/mood I feel wrecked`. Add
+    `--lift` to be picked up rather than matched. See below for how it works.
   - `/suggest [strategy]`: Recommend next tracks (`harmonic`, `energy_up`, `cool_down`, `acoustic`).
     Songs already in `dj-list` are skipped, so repeated calls keep offering new
     material rather than what you just queued.
@@ -70,6 +73,37 @@ Pressing `D` opens the interactive **AI DJ Booth**:
   - `/follow-dj`: Follow & load `dj-list` into live player.
   - `/clear-dj`: Empty `dj-list`.
   - `/now`, `/vibe`, `/stats`, `/search <query>`.
+
+### `/mood` — a set from how you feel
+
+One field takes two different kinds of request. *"upbeat happy electronic"*
+describes how the music should **sound**; *"I feel wrecked"* describes how you
+**are**. Neither retrieves well alone, so both run and their scores blend.
+
+- **Sound** comes from CLAP text search, which embeds audio and text in one
+  space. It is the only search here that reaches instrumentals, since a lyric
+  query needs a track to have words.
+- **Feeling** comes from a point on the energy (arousal) × brightness
+  (valence) plane, derived from mood words in the phrase using the same
+  lexicon the lyric analysis uses — so `heartbroken` works without being
+  listed anywhere.
+- **Lyrics** re-rank the shortlist, but only when the phrase was emotional.
+  There is no stored per-track sentiment, so this runs on demand over the
+  candidates rather than the library.
+
+A phrase with no feeling in it scores zero mood confidence, which flattens the
+plane term and lets the sound search rank alone. A deliberate one like
+`wrecked` weights it heavily. `--lift` reflects the target through the centre
+and floors the energy, so lifting someone out of anger gives them something
+energetic with better valence rather than a lullaby.
+
+Results are numbered like `/suggest`, so `1`..`5` and `all` queue them, and
+songs already in `dj-list` are excluded.
+
+> Brightness is a spectral centroid, not a true valence: across the library it
+> spans 0.0–0.55 with mean 0.19, so it is rescaled against that spread before
+> use. Energy is weighted more heavily because it is measured directly and
+> varies far more.
 
 ## Library, Mood Slider & Playlist Controls
 

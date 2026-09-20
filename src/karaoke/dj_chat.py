@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -126,6 +127,16 @@ class DJChatSession:
                         track_id = num
             return self.cmd_vibe(track_id=track_id)
 
+        if p_lower.startswith("/mood") or p_lower.startswith("mood "):
+            parts = user_prompt.strip().split(maxsplit=1)
+            phrase = parts[1].strip() if len(parts) > 1 else ""
+            lift = False
+            for flag in ("--lift", "-lift", "--cheer"):
+                if flag in phrase.lower():
+                    lift = True
+                    phrase = re.sub(re.escape(flag), "", phrase, flags=re.I).strip()
+            return self.cmd_mood(phrase, lift=lift)
+
         if p_lower.startswith("/search "):
             query = user_prompt.strip()[8:].strip()
             return self.cmd_search(query)
@@ -144,6 +155,8 @@ class DJChatSession:
         if p_lower in ("/help", "help", "?"):
             return (
                 "🎧 **Karaoke AI DJ Commands**:\n"
+                "• `/mood <how you feel or how it should sound>` — Build a set from a vibe\n"
+                "   (e.g. *'upbeat happy electronic'*, *'cynical pop'*, *'I feel wrecked'*; add `--lift` to be cheered up)\n"
                 "• `/suggest [harmonic|energy_up|cool_down|acoustic]` — Next song recommendations\n"
                 "• `1`, `2`, `3`, `4` or `/queue <#>` — Add suggestion to playlist & player queue\n"
                 "• `/queue all` (or `all`) — Add all suggestions to 'dj-list'\n"
@@ -452,6 +465,59 @@ class DJChatSession:
         ]
         for t in data.get("top_tracks", [])[:3]:
             lines.append(f"  1. {t['artist']} — {t['title']} ({t['plays']} plays)")
+        return "\n".join(lines)
+
+    def cmd_mood(self, phrase: str, lift: bool = False) -> str:
+        """Build a set from how someone feels, or how they want it to sound."""
+        if not phrase:
+            return (
+                "🎭 **Tell me the vibe.** Try `/mood upbeat happy electronic`, "
+                "`/mood cynical pop`, or just say how you feel — "
+                "`/mood I feel wrecked`.\n"
+                "Add `--lift` to be picked up instead of matched."
+            )
+
+        from . import mood_match
+
+        # Songs already in the setlist are not candidates, same as /suggest.
+        excluded: set[int] = set()
+        try:
+            current = json.loads(mcp_server.get_dj_playlist())
+            excluded = {t["track_id"] for t in current.get("tracks", []) if t.get("track_id")}
+        except Exception:
+            pass
+
+        target, rows = mood_match.match(phrase, limit=5, lift=lift, exclude=excluded)
+        self.last_candidates = list(rows)
+        self.last_suggestions = list(rows)
+
+        if not rows:
+            return (
+                f"🎭 Nothing matched *'{escape(phrase)}'*. The sound index may be "
+                "offline — try `/search` instead."
+            )
+
+        # Show what was understood. A mood match that cannot explain itself
+        # reads as random, and the user cannot tell a miss from a bad library.
+        if target.matched:
+            read = ", ".join(f"`{m}`" for m in target.matched)
+            verb = "lifting away from" if target.lifted else "matching"
+            header = f"🎭 **Mood set** — {verb} {read} {target.glyph}"
+        else:
+            header = f"🎭 **Mood set** — matched on sound alone {target.glyph}"
+
+        lines = [header, f"[dim]target energy {target.arousal:.0%}, brightness {target.valence:.0%}[/dim]\n"]
+        for i, r in enumerate(rows, 1):
+            synced = "🎤 [synced]" if r.get("has_synced_lyrics") else ""
+            genre = f" · {r['genre']}" if r.get("genre") else ""
+            lines.append(
+                f"[bold cyan][{i}][/bold cyan] [dim][#{r['track_id']}][/dim] "
+                f"**{escape(r['artist'])}** — *{escape(r['title'])}* "
+                f"(`{r.get('camelot') or '?'}` / {round(r.get('bpm') or 0)} BPM{genre}) {synced}"
+            )
+        lines.append(
+            f"\n👉 Type **1**–**{len(rows)}** to queue, or `all` for the whole set."
+        )
         return "\n".join(lines)
 
     def cmd_search(self, query: str) -> str:

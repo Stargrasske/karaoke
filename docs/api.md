@@ -183,6 +183,10 @@ This reference is generated from Python docstrings with `mkdocstrings`.
 
 ::: karaoke.moodframe
 
+## Free-Text Mood and Vibe Matching
+
+::: karaoke.mood_match
+
 ## Musical Scales, Keys, and Theory Helpers
 
 ::: karaoke.musictheory
