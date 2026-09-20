@@ -43,6 +43,11 @@ make systemd-uninstall # stop + remove the units
 platform comes back after a reboot/login. (For it to run without you being
 logged in, enable lingering once: `loginctl enable-linger $USER`.)
 
+These units are only one of four layers that have to come back. PostgreSQL,
+the kind cluster and Ollama are system-level and start by their own means —
+see [What survives a reboot](platform-services.md#5-what-survives-a-reboot)
+for the full picture and the one-command check.
+
 ## Post-processing runners
 
 `karaoke.target` starts `karaoke-celery-worker.service` and

@@ -6,11 +6,18 @@ This document provides a comprehensive map of every service in the Karaoke platf
 
 ## 1. End-to-End Topology Schema
 
-The system is partitioned into three cooperating domains:
+The system is partitioned into four cooperating domains:
 
-1. **Host-Side User Systemd Services**: Orchestrated by `karaoke.target`, handling APIs, media control, Celery post-processing worker, and monitoring.
-2. **In-Cluster Services (Kubernetes: `kind-karaoke`)**: RabbitMQ message broker, OpenSearch vector search, and the Argo Events workflow engine.
+1. **Host-Side User Systemd Services**: Orchestrated by `karaoke.target`, handling APIs, media control, Celery post-processing worker, the MCP server, and monitoring.
+2. **In-Cluster Services (Kubernetes: `kind-karaoke`)**: RabbitMQ message broker, OpenSearch vector search, the Obot MCP gateway, and the Argo Events workflow engine.
 3. **Interactive Control Surfaces**: Terminal TUIs (`karaoke`, `karaoke-admin`), browser Web UI (`textual-serve`), and web dashboards (Flower, RabbitMQ Management).
+4. **The AI Plane**: the MCP server exposing the library as tools, the DJ booth driving local Ollama, and external MCP clients reaching in either directly or through the Obot gateway.
+
+Three edge types decide what breaks on a reboot, so they are drawn distinctly:
+a **port-forward** is a host process (`karaoke-mq-forward`) and dies with it; a
+**kind extraPortMapping** belongs to the cluster container; an **outbound
+tunnel** is dialled from the host because Obot refuses to connect *to* a
+private IP. See [What survives a reboot](#5-what-survives-a-reboot).
 
 ```mermaid
 flowchart TB
@@ -26,14 +33,25 @@ flowchart TB
     subgraph HostSystemd["Host Services (systemd --user / karaoke.target)"]
         CtrlAPI["karaoke-ctrl-api.service\n:8765\nPlayback & Worker Scaling API"]
         LibAPI["karaoke-api.service\n:8000\nRead-only Tracks & Lyrics API"]
+        MCPSrv["karaoke-mcp.service\n:8888 /sse + /mcp\nMCP tools over SSE & Streamable HTTP"]
+        Tunnel["karaoke-obot-tunnel.service\nobot tunnel (outbound)"]
+        Relay["karaoke-relay.service\noutbox -> OpenSearch"]
+        WebTUISvc["karaoke-webtui.service\ntextual-serve :8001"]
+        Kiosk["karaoke-kiosk.service\nChrome kiosk window"]
         MQForward["karaoke-mq-forward.service\nkubectl port-forward\n5672 & 15672"]
         CeleryWorker["karaoke-celery-worker.service\nWorker Pool (concurrency=2)\nSlice: karaoke-postprocess.slice"]
         CeleryFlower["karaoke-celery-flower.service\nFlower Web Server (:5555)"]
         HealthTimer["karaoke-healthcheck.timer\n5-minute periodic sweep"]
     end
 
+    subgraph AIPlane["AI Plane"]
+        MCPClient["MCP clients\nClaude Code / Claude Desktop"]
+        DJBooth["AI DJ Booth\nTUI 'D' / karaoke-dj"]
+        Ollama["Ollama :11434\nqwen3 (host)"]
+    end
+
     subgraph HostStorage["Host Storage & Media Drivers"]
-        SQLiteDB[("karaoke.db (SQLite)\n~/.local/share/karaoke")]
+        PG[("PostgreSQL 18\nkaraoke database\ntracks / lyrics / analysis / events")]
         CeleryDB[("celery-results.sqlite\nTask Result Backend")]
         YTCache["YouTube Audio Cache\n~/.local/share/karaoke/youtube"]
         MPRIS["Linux Desktop MPRIS\n(playerctl)"]
@@ -44,7 +62,8 @@ flowchart TB
         RMQ["RabbitMQ Broker Pod\nsvc/rabbitmq\nAMQP :5672 / Mgmt :15672"]
         QueueWork["Queue:\nkaraoke-postprocess-celery"]
         ExCeleryEV["Exchange (topic):\nceleryev"]
-        OpenSearchPod[("OpenSearch 2.x\nkaraoke-os-master-0\n:9200")]
+        OpenSearchPod[("OpenSearch 2.x\nopensearch-cluster-master\n:9200 (NodePort 30920)")]
+        ObotGW["Obot MCP Gateway\nsvc/obot-obot :30080\naudit + access policies"]
     end
 
     subgraph K8sArgo["Kubernetes: namespace 'argo-events'"]
@@ -56,22 +75,38 @@ flowchart TB
 
     %% Client linkages
     TUI -->|MPRIS & CDP| ChromeCDP
-    TUI -->|read lyrics/analysis| SQLiteDB
+    TUI -->|read lyrics/analysis| PG
     WebTUI -->|browser session| TUI
     AdminTUI -->|HTTP /api/workers/status| CtrlAPI
-    AdminTUI -->|SIGTERM process| WebTUI
-    AdminTUI -->|in-process / direct fallback| SQLiteDB
+    AdminTUI -->|SIGTERM process| WebTUISvc
+    AdminTUI -->|in-process / direct fallback| PG
 
     %% Host Service linkages
     CtrlAPI -->|systemctl --user /proc| CeleryWorker
     CtrlAPI -->|MPRIS & CDP| MPRIS
-    LibAPI --> SQLiteDB
-    MQForward -.->|TCP tunnel| RMQ
+    LibAPI --> PG
+    WebTUISvc -->|serves| WebTUI
+    Kiosk --> ChromeCDP
+    MQForward -.->|port-forward :5672/:15672| RMQ
+    Relay -->|read outbox| PG
+    Relay -->|index events| OpenSearchPod
+
+    %% AI plane
+    MCPClient -->|SSE / Streamable HTTP| MCPSrv
+    MCPClient -.->|or via gateway, for audit| ObotGW
+    MCPSrv -->|search, stats, playlists| PG
+    MCPSrv -->|sounds-like / CLAP| OpenSearchPod
+    MCPSrv -->|play_track| MPRIS
+    DJBooth -->|in-process tools| MCPSrv
+    DJBooth -->|chat completions| Ollama
+    TUI -->|D opens| DJBooth
+    Tunnel ==>|outbound, authenticated| ObotGW
+    ObotGW ==>|proxied back through tunnel| MCPSrv
 
     %% Celery linkages
     CeleryWorker -->|AMQP localhost:5672| MQForward
     CeleryFlower -->|AMQP localhost:5672| MQForward
-    CeleryWorker -->|read/write metadata| SQLiteDB
+    CeleryWorker -->|read/write metadata| PG
     CeleryWorker -->|audio downloads| YTCache
     CeleryWorker -->|persist task states| CeleryDB
     CeleryWorker -->|rebuild vectors| OpenSearchPod
@@ -102,6 +137,9 @@ Every live service, its bound address, health check, and authentication details:
 | **OpenSearch REST** | `http://127.0.0.1:9200` | HTTP / REST | K8s (`default`) | Vector search indexes (`tracks`, `tracks-lines`, `tracks-notes`) |
 | **Web Karaoke TUI** | [http://localhost:8001](http://localhost:8001) | HTTP / WebSockets | Host (`textual-serve`)| Interactive karaoke player rendered in the web browser |
 | **Chrome CDP** | `http://127.0.0.1:9222` | HTTP / WebSocket | Host (`google-chrome`) | DevTools automation port for YouTube Music & Spotify playback |
+| **MCP Server** | `http://127.0.0.1:8888` | SSE + Streamable HTTP | Host (`systemd`) | Library as MCP tools: search, now-playing, suggestions, lyric vibe, playlists, playback. `/health` for probes |
+| **Obot Gateway** | [http://172.18.0.2:30080](http://172.18.0.2:30080) | HTTP / Web UI | K8s (`obot`) | MCP gateway: audit log and access policies in front of the MCP server. Not a chat product |
+| **Ollama** | `http://127.0.0.1:11434` | HTTP / REST | Host | Local LLM behind the AI DJ booth (`qwen3`) |
 | **MkDocs Live** | [http://127.0.0.1:8085](http://127.0.0.1:8085) | HTTP / HTML | Host (`make docs-live`)| Complete platform documentation site |
 
 ---
@@ -120,7 +158,7 @@ The Admin Operations TUI (`src/karaoke/admin_tui.py`) serves as the central cont
 | `c` | **Refresh Clients** | `ss -Htn` socket sweep + `/api/play/sessions` | Updates connected web tabs and active playback sessions |
 | `X` | **Stop Web UI** | `SIGTERM` to `web_serve.py` processes | Cleanly closes WebSockets for open browser tabs |
 | `b` | **Audio Backfill** | Subprocess via `ProcessLock("admin_pipeline")` | Runs `scripts/fill_analysis_and_vector_gaps.py` |
-| `v` | **Rebuild Vectors** | `vector_index.rebuild_from_sqlite` | Rebuilds OpenSearch vector indices from SQLite |
+| `v` | **Rebuild Vectors** | `vector_index.rebuild_from_sqlite` | Rebuilds OpenSearch vector indices from the Postgres store (the function name predates the migration) |
 | `a` | **Analyse Recordings** | `recording_worker.analyse` | Decompiles captured audio recordings and ingests vectors |
 | `w` | **Whisper Align** | `postprocess_worker.run_sync_logic` | Forces word-level lyric alignment for specified track |
 | `s` | **Folder Scan** | `POST /api/scan/folder` | Scans local music directory for fingerprinting & ingest |
@@ -160,7 +198,7 @@ sequenceDiagram
     participant App as TUI / Admin / API
     participant RMQ as RabbitMQ (Kind)
     participant HostWorker as Celery Worker (Host)
-    participant SQLite as SQLite / Storage
+    participant Store as PostgreSQL / Storage
     participant ES as Argo EventSource
     participant Sensor as Argo Sensor
     participant Job as K8s Logging Job
@@ -168,10 +206,10 @@ sequenceDiagram
     App->>RMQ: enqueue task -> karaoke-postprocess-celery
     RMQ-->>HostWorker: deliver task payload
     activate HostWorker
-    HostWorker->>SQLite: execute resolve_track_id & download_audio
-    HostWorker->>SQLite: execute analyze_audio (key/BPM/energy)
-    HostWorker->>SQLite: execute upgrade_timings / sync_lyrics (Whisper)
-    HostWorker->>SQLite: execute rebuild_vectors (OpenSearch)
+    HostWorker->>Store: execute resolve_track_id & download_audio
+    HostWorker->>Store: execute analyze_audio (key/BPM/energy)
+    HostWorker->>Store: execute upgrade_timings / sync_lyrics (Whisper)
+    HostWorker->>Store: execute rebuild_vectors (OpenSearch)
     HostWorker->>RMQ: emit event -> exchange 'celeryev' (task.succeeded)
     deactivate HostWorker
     RMQ-->>ES: deliver event to queue 'karaoke-celery-events'
@@ -188,7 +226,45 @@ sequenceDiagram
 
 ---
 
-## 5. Verification & Health Commands
+## 5. What survives a reboot
+
+Nothing here is started by hand, but the layers come back through four
+different mechanisms, and a gap in any one is invisible until the machine
+restarts mid-set.
+
+| layer | what brings it back | verify |
+|---|---|---|
+| Host user services | `Linger=yes` for the user, plus `karaoke.target` enabled into `default.target.wants` | `systemctl --user list-units 'karaoke*'` |
+| PostgreSQL | `postgresql-18.service` (system, enabled) | `systemctl is-enabled postgresql-18` |
+| kind cluster | `docker.service` (enabled) + container restart policy `unless-stopped` | `docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' karaoke-control-plane` |
+| OpenSearch · RabbitMQ · Obot | inside the cluster — they return with it, not separately | `kubectl get pods -A` |
+| Ollama | `ollama.service` (system) | `systemctl is-enabled ollama` |
+| Everything at once | — | `python scripts/healthcheck.py` |
+
+**Lingering is the setting that decides all of it.** User units normally stop
+at logout and do not start until the next login; `loginctl enable-linger tina`
+is what makes `karaoke.target` come up on a headless boot. Check it with
+`loginctl show-user tina -p Linger`.
+
+**The cluster restart policy is the one that bites.** kind creates its
+container with `on-failure` and `MaximumRetryCount=1`, which is not a restart
+guarantee — and OpenSearch, RabbitMQ and Obot all live inside it, so the whole
+in-cluster half of the diagram depends on that single container returning:
+
+```bash
+docker update --restart unless-stopped karaoke-control-plane
+```
+
+**Ordering is deliberately not enforced.** Host user units cannot order
+themselves after system services like PostgreSQL, or after Docker. Rather than
+fight that, every unit uses `Restart=` and retries: a service that starts
+before its dependency fails its first connect and comes back. The health check
+tolerates the same window, retrying the whole sweep (`KARAOKE_HEALTH_RETRIES`,
+default 6 × 5s) before reporting `DEGRADED`.
+
+---
+
+## 6. Verification & Health Commands
 
 Use these commands to verify that every layer of the platform is operating correctly:
 
