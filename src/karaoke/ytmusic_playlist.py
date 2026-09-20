@@ -107,6 +107,22 @@ def resolve_candidate(c: Candidate, client: YTMusicClient) -> Candidate:
     return c
 
 
+def get_ytmusic_client() -> Optional[YTMusicClient]:
+    """A YouTube Music client, or None when one cannot be built.
+
+    Callers here are all sync paths that must degrade rather than fail: the
+    DJ booth, the follow-playlist action and the TUI playlist views stay
+    useful against local state when YouTube Music is unreachable or the
+    stored credentials have expired. Constructing YTMusicClient directly
+    raises in both cases, which is what crashed /follow-dj.
+    """
+    try:
+        return YTMusicClient()
+    except Exception as exc:
+        log.warning("YouTube Music client unavailable: %s", exc)
+        return None
+
+
 def build_or_sync_ytmusic_playlist(
     *,
     candidates: list[Candidate],
@@ -632,8 +648,10 @@ def reconcile_playlist_with_remote(
     """
     if not playlist_id:
         return local_rows, False
-    yt = client or YTMusicClient()
-    if not yt.is_authenticated:
+    # `client or YTMusicClient()` would construct one here and raise on the
+    # very failures the caller already handled by passing None.
+    yt = client if client is not None else get_ytmusic_client()
+    if yt is None or not yt.is_authenticated:
         return local_rows, False
 
     try:
