@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 ProgressCallback = Callable[[str, dict[str, Any]], None]
 
 from . import (
-    analyze, clap_vector, genre, localcache,
+    analyze, clap_vector, genre, key_progression, localcache,
     lyrics, source_select, tags, youtube
 )
 from .identify import identify_file_fingerprint
@@ -30,6 +30,7 @@ def scan_and_ingest_folder(
     only_paths: Optional[set[str]] = None,
     conn: Optional[Any] = None,
     progress: ProgressCallback | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Scan a directory of audio files, enrich with fingerprinting, audio analysis,
     Spotify/YouTube links, and ingest into SQLite + OpenSearch.
@@ -38,6 +39,13 @@ def scan_and_ingest_folder(
     paths (still discovered under ``music_dir``). This powers a resumable retry
     pass that re-ingests only the files a previous run skipped, without
     re-touching everything already in the database.
+
+    By default a file whose track already has every artefact -- a CLAP vector
+    and a harmonic progression -- is skipped untouched. Re-running otherwise
+    costs a decode and an analysis per file, and overwrites a vector that may
+    have been made from a better copy of the audio than the one on disk now.
+    Pass ``force=True`` to redo them anyway, which is what you want after
+    changing how a vector is computed.
     """
     def emit(event: str, **payload: Any) -> None:
         payload.setdefault("event", event)
@@ -68,16 +76,52 @@ def scan_and_ingest_folder(
         "fingerprinted": 0,
         "sourced": 0,
         "classified": 0,
+        "embedded": 0,
+        "progressions": 0,
+        "skipped": 0,
         "errors": 0,
         "items": [],
     }
 
     labels = genre.label_vectors() if (classify_audio and clap_vector.available()) else {}
 
+    # One query per index rather than one per file: the check has to be cheap
+    # or it costs more than the work it avoids.
+    done_clap: set[int] = set()
+    done_prog: set[int] = set()
+    if not force and not dry_run:
+        try:
+            from .osclient import client as get_os_client
+
+            os_client = get_os_client()
+            if os_client is not None:
+                for index_name, bucket in ((clap_vector.CLAP_INDEX, done_clap),
+                                           (key_progression.PROGRESSION_INDEX, done_prog)):
+                    try:
+                        res = os_client.search(index=index_name, body={
+                            "size": 10000, "_source": ["track_id"],
+                            "query": {"match_all": {}},
+                        })
+                        bucket.update(int(h["_source"]["track_id"])
+                                      for h in res["hits"]["hits"])
+                    except Exception:
+                        pass
+        except Exception:
+            log.debug("could not read existing vectors; scanning everything")
+
     for index, path in enumerate(audio_files, start=1):
         emit("item_start", index=index, total=len(audio_files), path=str(path), name=path.name)
         log.info("Folder scan %s/%s: %s", index, len(audio_files), path)
         try:
+            # Already fully processed? Skip before the decode, which is the
+            # expensive part -- not after it.
+            if not force and c is not None:
+                known = localcache.find_track_by_url(str(path), c)
+                if known and known[0] in done_clap and known[0] in done_prog:
+                    stats["skipped"] += 1
+                    emit("skip", index=index, total=len(audio_files), path=str(path),
+                         name=path.name, reason="already analysed")
+                    continue
             # 1. Tags, YouTube ID lookup, Shazam Fingerprint, and Recording Markers
             t = tags.extract_tags(path)
             artist, title, album = t.artist, t.title, t.album
@@ -287,6 +331,35 @@ def scan_and_ingest_folder(
                     enqueue_if_needed(artist, title, yt_url or str(path), conn=c)
                 except Exception:
                     log.debug("folder_scan: postprocess enqueue failed for %s - %s", artist, title)
+
+            # Save the CLAP vector, not just the word read off it. Embedding
+            # is the whole cost of this step; indexing is one small write.
+            # Dropping it here is why a full library scan produced thousands
+            # of genre labels and almost no searchable vectors -- and the
+            # audio it came from is often gone by the time that is noticed.
+            if clap_vec:
+                key_obj = getattr(analysis_res, "key", None)
+                if clap_vector.store(
+                    track_id, clap_vec,
+                    artist=artist or "", title=title or "", album=album or "",
+                    detected_key=getattr(key_obj, "name", "") or "",
+                    bpm=getattr(analysis_res, "bpm", None),
+                ):
+                    stats["embedded"] += 1
+
+            # Harmonic shape: how the key moves across the track, rather than
+            # the single label a whole-file estimate collapses it to. Key
+            # detection runs at about 0.002x realtime, so next to the decode
+            # already paid for above this is close to free.
+            if classify_audio:
+                try:
+                    prog = key_progression.analyse(str(path))
+                    if prog and key_progression.store(track_id, prog,
+                                                      artist=artist or "",
+                                                      title=title or ""):
+                        stats["progressions"] += 1
+                except Exception:
+                    log.debug("progression analysis failed for %s", path, exc_info=True)
 
             # Save Genre
             if genre_verdict:

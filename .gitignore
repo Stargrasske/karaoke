@@ -29,3 +29,9 @@ docs_confluence/
 .claude/
 optimize_karaoke_credit_usage
 scripts/tst-gemi.py.py
+
+# Vector backup exports: data, not source. Regenerate with
+# `python scripts/vector_backup.py export`. Copy these off the machine --
+# Postgres has no backup of its own here, so they are the only copy that
+# survives losing the disk.
+backups/
