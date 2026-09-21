@@ -6,6 +6,7 @@ namespace: karaoke
 resources:
   - namespace.yaml
   - pvc.yaml
+  - postgres.yaml
   - deployment.yaml
   - service.yaml
   - rabbitmq.yaml

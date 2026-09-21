@@ -92,9 +92,34 @@ jobs:
       - name: Load image into kind
         run: kind load docker-image karaoke-api:ci --name karaoke-ci
 
+      - name: Create the schema ConfigMap
+        # The API no longer carries its own schema: POSTGRES_DDL in the
+        # migration script is the single authority (tests/conftest.py parses
+        # the same constant). Extract it and hand it to the Postgres
+        # entrypoint, before the manifests so the pod sees it on first boot --
+        # /docker-entrypoint-initdb.d only runs when the data directory is
+        # initialised.
+        #
+        # Read the constant out of the source rather than importing it: the
+        # migration script imports psycopg at module level, and this job
+        # installs no Python dependencies.
+        run: |
+          kubectl apply -f deploy/k8s/namespace.yaml
+          python - <<'PY' > schema.sql
+          import re
+          src = open("scripts/migrate_sqlite_to_postgres.py").read()
+          m = re.search(r'POSTGRES_DDL = """(.*?)"""', src, re.DOTALL)
+          if not m:
+              raise SystemExit("Could not find POSTGRES_DDL in the migration script")
+          print(m.group(1))
+          PY
+          test -s schema.sql
+          kubectl -n karaoke create configmap karaoke-schema --from-file=schema.sql
+
       - name: Deploy manifests
         run: |
           kubectl apply -k deploy/k8s
+          kubectl -n karaoke rollout status deploy/postgres --timeout=180s
           kubectl -n karaoke set image deploy/karaoke-api api=karaoke-api:ci
           kubectl -n karaoke rollout status deploy/karaoke-api --timeout=180s
 
@@ -126,3 +151,4 @@ jobs:
           kubectl -n karaoke get all,pvc || true
           kubectl -n karaoke describe pods || true
           kubectl -n karaoke logs -l app.kubernetes.io/name=karaoke-api --tail=100 || true
+          kubectl -n karaoke logs -l app.kubernetes.io/name=postgres --tail=100 || true
