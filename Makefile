@@ -155,8 +155,13 @@ recordings: ## List record-mode sessions
 recording-show: ## Show a recording's derived track list (ID=...)
 	$(PYTHON) -m karaoke.recording_worker --show $(ID)
 
-recording-analyse: ## Decompile a recording into the DB (ID=...); needs the audio venv
-	PYTHONPATH=src $(AUDIO_PY) -m karaoke.recording_worker --analyse $(ID)
+# Runs in the main venv, not $(AUDIO_VENV). This writes to Postgres, and the
+# audio venv is a DSP-only sidecar with no psycopg -- routing a database entry
+# point through it failed at import with "No module named 'psycopg'".
+# analyze_audio already delegates to the audio venv by itself when the calling
+# interpreter lacks essentia, so nothing is lost by calling this normally.
+recording-analyse: ## Decompile a recording into the DB (ID=...)
+	$(PYTHON) -m karaoke.recording_worker --analyse $(ID)
 
 analyze: ## Detect + store key/BPM for a file (FILE=... ARTIST=... TITLE=...)
 	$(PYTHON) -c "import sys; from karaoke.cli import analyze_main; sys.exit(analyze_main(['--file','$(FILE)','--artist','$(ARTIST)','--title','$(TITLE)']))"
