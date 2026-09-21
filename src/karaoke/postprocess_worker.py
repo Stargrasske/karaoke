@@ -107,7 +107,7 @@ def run_timings_logic(track_id: int, conn, cookies_from_browser: Optional[str]) 
             FROM tracks t
             JOIN sources s ON s.track_id = t.track_id AND s.kind IN ('youtube', 'youtube_music')
             JOIN lyrics l  ON l.track_id = t.track_id AND l.kind = 'approved'
-            WHERE t.track_id = ?
+            WHERE t.track_id = %s
             LIMIT 1
             """,
             (track_id,),
@@ -143,8 +143,9 @@ def run_sync_logic(track_id: int, audio_path: Path, conn) -> bool:
     from .whisper_sync import lines_to_lrc, transcribe_to_words
 
     row = conn.execute(
-        "SELECT plain_lyrics, source FROM lyrics"
-        " WHERE track_id = ? AND kind = 'approved'", (track_id,)).fetchone()
+        "SELECT t.artist, t.title, l.plain_lyrics, l.source FROM tracks t"
+        " JOIN lyrics l ON l.track_id = t.track_id"
+        " WHERE t.track_id = %s AND l.kind = 'approved'", (track_id,)).fetchone()
     plain = (row["plain_lyrics"] or "").strip() if row else ""
     if not plain:
         return False
@@ -184,6 +185,20 @@ def run_sync_logic(track_id: int, audio_path: Path, conn) -> bool:
         return False
 
     try:
+        from .lyrics import fetch_lrclib
+        ly = fetch_lrclib(row["artist"], row["title"], duration=dur)
+        if ly.has_synced:
+            log.info("postprocess: upgraded track %s to synced via online lyrics", track_id)
+            conn.execute(
+                "UPDATE lyrics SET synced_lyrics = %s, source = %s"
+                " WHERE track_id = %s AND kind = 'approved'",
+                (ly.synced_raw, ly.source, track_id))
+            conn.commit()
+            return True
+    except Exception:
+        log.warning("postprocess: fetch_lrclib failed for track %s", track_id, exc_info=True)
+
+    try:
         # Tell Whisper the language rather than letting it detect one from the
         # opening of the audio, which on music is regularly an instrumental
         # intro. The lyrics are already in hand, so the answer is knowable --
@@ -203,7 +218,7 @@ def run_sync_logic(track_id: int, audio_path: Path, conn) -> bool:
         meta = conn.execute(
             "SELECT t.duration, a.bpm FROM tracks t"
             " LEFT JOIN track_analysis a ON a.track_id = t.track_id"
-            " WHERE t.track_id = ?", (track_id,)).fetchone()
+            " WHERE t.track_id = %s", (track_id,)).fetchone()
         # The tempo is what turns a plausible-looking timestamp into a
         # musically placed one: it sets the beat grid the lines snap to and the
         # bar window that identifies an instrumental break.
@@ -243,8 +258,8 @@ def run_sync_logic(track_id: int, audio_path: Path, conn) -> bool:
         return False
 
     conn.execute(
-        "UPDATE lyrics SET synced_lyrics = ?, source = ?"
-        " WHERE track_id = ? AND kind = 'approved'",
+        "UPDATE lyrics SET synced_lyrics = %s, source = %s"
+        " WHERE track_id = %s AND kind = 'approved'",
         (lrc, synced_source, track_id))
     conn.commit()
 

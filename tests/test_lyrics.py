@@ -177,3 +177,37 @@ def test_clean_artist_never_empties_a_name():
 
     assert clean_artist("Official") == "Official"
     assert clean_artist("VEVO") == "VEVO"
+
+
+def test_fetch_lrclib_falls_back_to_search_when_get_is_plain_only():
+    """If /api/get returns HTTP 200 with only plain lyrics, it must still search for synced."""
+    sess = _FakeSession([
+        _FakeResp(200, {"plainLyrics": "Hello world", "syncedLyrics": None}),  # get returns plain
+        _FakeResp(200, [                                                        # search finds synced
+            {"trackName": "Song", "plainLyrics": "Hello world", "syncedLyrics": "[00:01.00] Hello world"}
+        ]),
+    ])
+    ly = fetch_lrclib("Artist", "Song", session=sess)
+    assert ly.has_synced
+    assert ly.lines == [(1.0, "Hello world")]
+    assert len(sess.calls) == 2
+    assert "/api/get" in sess.calls[0][0]
+    assert "/api/search" in sess.calls[1][0]
+
+
+def test_fetch_lrclib_tries_cleaned_artist_and_page_title():
+    """Tries cleaned artist (- Topic) and page title ((Official Video)) if exact misses."""
+    sess = _FakeSession([
+        _FakeResp(404, {}),  # get: Kavinsky - Topic, Nightcall (Official Video)
+        _FakeResp(200, []),  # search: Kavinsky - Topic, Nightcall (Official Video)
+        _FakeResp(404, {}),  # get: Kavinsky - Topic, Nightcall
+        _FakeResp(200, []),  # search: Kavinsky - Topic, Nightcall
+        _FakeResp(404, {}),  # get: Kavinsky, Nightcall (Official Video)
+        _FakeResp(200, []),  # search: Kavinsky, Nightcall (Official Video)
+        _FakeResp(200, {"syncedLyrics": "[00:05.00] Nightcall", "plainLyrics": "Nightcall"}),  # get: Kavinsky, Nightcall
+    ])
+    ly = fetch_lrclib("Kavinsky - Topic", "Nightcall (Official Video)", session=sess)
+    assert ly.has_synced
+    assert ly.lines == [(5.0, "Nightcall")]
+    assert sess.calls[-1][1]["artist_name"] == "Kavinsky"
+    assert sess.calls[-1][1]["track_name"] == "Nightcall"

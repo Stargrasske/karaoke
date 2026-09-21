@@ -98,7 +98,7 @@ class KaraokeBrowser(App):
                             CASE
                                 WHEN s2.kind = 'youtube_music' THEN 0
                                 WHEN s2.kind = 'youtube' THEN 1
-                                WHEN s2.url LIKE 'http%' THEN 2
+                                WHEN s2.url LIKE 'http%%' THEN 2
                                 WHEN s2.kind = 'spotify' THEN 3
                                 ELSE 4
                             END,

@@ -400,12 +400,12 @@ def similar_main(argv: Optional[list[str]] = None) -> int:  # pragma: no cover
     try:
         if args.query.isdigit():
             track_id = int(args.query)
-            row = conn.execute("SELECT artist, title FROM tracks WHERE track_id = ?",
+            row = conn.execute("SELECT artist, title FROM tracks WHERE track_id = %s",
                                (track_id,)).fetchone()
         else:
             row = conn.execute(
                 "SELECT track_id, artist, title FROM tracks"
-                " WHERE (artist || ' ' || title) LIKE ? COLLATE NOCASE"
+                " WHERE (artist || ' ' || title) ILIKE %s"
                 " ORDER BY length(artist || title) LIMIT 1",
                 (f"%{args.query}%",)).fetchone()
             track_id = int(row["track_id"]) if row else 0

@@ -8,8 +8,8 @@ metadata:
     app.kubernetes.io/part-of: karaoke
 spec:
   replicas: 1
-  # SQLite on a ReadWriteOnce volume: never run two writers, and avoid a
-  # rolling update briefly binding the volume twice.
+  # The data volume is ReadWriteOnce: avoid a rolling update briefly binding
+  # it twice. Track data itself now lives in Postgres, not on this volume.
   strategy:
     type: Recreate
   selector:
@@ -37,6 +37,10 @@ spec:
               value: /data
             - name: OPENSEARCH_URL
               value: http://opensearch-cluster-master.default.svc.cluster.local:9200
+            # localcache reads this directly; without it the pool falls back to
+            # localhost, which inside the pod is the pod itself.
+            - name: KARAOKE_PG_URL
+              value: postgresql://karaoke:karaoke@postgres.karaoke.svc.cluster.local:5432/karaoke
           volumeMounts:
             - name: data
               mountPath: /data

@@ -82,9 +82,12 @@ def test_missing_track_has_no_offset(conn):
 
 
 def test_migration_adds_mode_to_an_old_table(tmp_path):
+    if getattr(localcache, "_IS_PG", False):
+        import pytest
+        pytest.skip("Test specifically for SQLite schema migration")
     import sqlite3
 
-    path = tmp_path / "old.db"
+    path = tmp_path / "cache.db"
     old = sqlite3.connect(path)
     old.execute("CREATE TABLE track_sync_offsets (track_id INTEGER PRIMARY KEY,"
                 " offset_s REAL NOT NULL, updated_at REAL NOT NULL)")

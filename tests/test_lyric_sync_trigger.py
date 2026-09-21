@@ -15,7 +15,7 @@ from karaoke.postprocess_queue import needs_postprocessing
 @pytest.fixture()
 def conn(tmp_path):
     c = localcache.connect(tmp_path / "t.db")
-    c.executescript("""
+    c.execute("""
         INSERT INTO tracks (track_id, artist, title, duration) VALUES
             (1, 'A', 'Plain Only', 200.0),
             (2, 'B', 'Already Synced', 200.0),
@@ -217,3 +217,30 @@ def test_an_unknown_track_is_not_queued(conn, monkeypatch):
     app = KaraokeTui.__new__(KaraokeTui)
     app.call_from_thread = lambda fn, *a, **k: None
     app._enqueue_sync("Nobody", "Nothing", conn)
+
+
+def test_run_sync_logic_upgrades_via_online_lyrics_without_whisper(conn, monkeypatch, tmp_path):
+    """When LRCLIB already has timed lyrics, worker upgrades the cache immediately
+    without invoking Whisper."""
+    from karaoke import postprocess_worker as pw
+
+    from karaoke.lyrics import Lyrics
+
+    monkeypatch.setattr(
+        "karaoke.whisper_sync.transcribe_to_words",
+        lambda *a, **k: pytest.fail("transcribe_to_words should not be called when online synced lyrics exist"),
+    )
+
+    fake_lrclib = Lyrics(
+        plain="online line 1\nonline line 2",
+        synced_raw="[00:01.00] online line 1\n[00:05.00] online line 2",
+        lines=[(1.0, "online line 1"), (5.0, "online line 2")],
+        source="lrclib",
+    )
+    monkeypatch.setattr("karaoke.lyrics.fetch_lrclib", lambda *a, **k: fake_lrclib)
+
+    assert pw.run_sync_logic(1, tmp_path / "audio.webm", conn) is True
+    row = conn.execute("SELECT synced_lyrics, plain_lyrics, source FROM lyrics WHERE track_id = 1").fetchone()
+    assert "[00:01.00] online line 1" in row["synced_lyrics"]
+    assert row["source"] == "lrclib"
+

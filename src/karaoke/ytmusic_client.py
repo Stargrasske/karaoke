@@ -183,11 +183,21 @@ class YTMusicClient:
 
     def get_playlist(self, playlist_id: str, limit: int = 100) -> dict[str, Any]:
         """Fetch details and tracks of a playlist."""
-        try:
-            return self.api.get_playlist(playlist_id, limit=limit)
-        except Exception as exc:
-            log.error("Failed to get playlist %s from YouTube Music: %s", playlist_id, exc)
-            raise YTMusicError(f"Failed to fetch playlist {playlist_id}: {exc}") from exc
+        import time
+        retries = 3
+        delay = 2.0
+        
+        for attempt in range(1, retries + 1):
+            try:
+                return self.api.get_playlist(playlist_id, limit=limit)
+            except Exception as exc:
+                if attempt == retries:
+                    log.error("Failed to get playlist %s from YouTube Music after %d attempts: %s", playlist_id, retries, exc)
+                    raise YTMusicError(f"Failed to fetch playlist {playlist_id}: {exc}") from exc
+                else:
+                    log.warning("Playlist %s not ready yet, retrying in %.1fs (attempt %d/%d): %s", playlist_id, delay, attempt, retries, exc)
+                    time.sleep(delay)
+                    delay *= 2.0
 
     def delete_playlist(self, playlist_id: str) -> dict[str, Any] | str:
         """Delete a YouTube Music playlist by ID."""

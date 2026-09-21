@@ -13,10 +13,12 @@ Checks:
   - RabbitMQ mgmt    http://127.0.0.1:15672           (optional)
   - kind cluster     karaoke ns pods Running          (required)
   - Kiosk Chrome CDP http://localhost:9222/json       (optional)
-  - SQLite DB        openable + track count           (required)
+  - Postgres DB      openable + track count           (required)
+  - Relay backlog    outbox draining, no dead letters (optional)
 
 Env overrides: KARAOKE_API_PORT (8000), KARAOKE_CTRL_PORT (8765),
-RABBITMQ_HOST (localhost), KUBE_CONTEXT (kind-karaoke), K8S_NAMESPACE (karaoke).
+RABBITMQ_HOST (localhost), KUBE_CONTEXT (kind-karaoke), K8S_NAMESPACE (karaoke),
+KARAOKE_HEALTH_RELAY_MAX_AGE (600).
 """
 from __future__ import annotations
 
@@ -31,7 +33,15 @@ API_PORT = os.environ.get("KARAOKE_API_PORT", "8000")
 CTRL_PORT = os.environ.get("KARAOKE_CTRL_PORT", "8765")
 MQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
 KUBE_CONTEXT = os.environ.get("KUBE_CONTEXT", "kind-karaoke")
+OPENSEARCH_URL = os.environ.get("OPENSEARCH_URL", "http://localhost:9200")
+MCP_PORT = int(os.environ.get("KARAOKE_MCP_PORT", "8888"))
+WEBTUI_PORT = int(os.environ.get("KARAOKE_WEBTUI_PORT", "8001"))
+OLLAMA_PORT = int(os.environ.get("KARAOKE_OLLAMA_PORT", "11434"))
 K8S_NS = os.environ.get("K8S_NAMESPACE", "karaoke")
+# How stale the oldest pending event may get before the relay counts as stalled.
+# Generous by default: a bulk import queues a large backlog that the relay
+# drains in seconds, and a brief consumer outage is normal.
+RELAY_MAX_AGE = float(os.environ.get("KARAOKE_HEALTH_RELAY_MAX_AGE", "600"))
 
 OK, WARN, FAIL = "OK", "WARN", "FAIL"
 _MARK = {OK: "✓", WARN: "!", FAIL: "✗"}
@@ -101,15 +111,99 @@ def check_kiosk_chrome() -> tuple[str, str]:
         WARN, "kiosk Chrome CDP :9222 down (unified player off)")
 
 
-def check_sqlite() -> tuple[str, str]:
+def check_database() -> tuple[str, str]:
     try:
         sys.path.insert(0, "/home/tina/karaoke/src")
         from karaoke import localcache
         with localcache.connect() as conn:
-            n = conn.execute("SELECT count(*) FROM tracks").fetchone()[0]
-        return OK, f"{n} tracks"
+            # Rows come back as dicts (the pool sets row_factory=dict_row), so
+            # this must be keyed by name -- row[0] raises KeyError.
+            row = conn.execute("SELECT count(*) AS n FROM tracks").fetchone()
+        return OK, f"{row['n']} tracks"
     except Exception as exc:
         return FAIL, f"DB error: {exc}"
+
+
+def check_relay_backlog() -> tuple[str, str]:
+    """Is the outbox relay actually draining, and has it parked anything?
+
+    Optional rather than required: a stalled relay stops *forwarding* events,
+    but nothing is lost -- they stay in Postgres with ``published_at IS NULL``
+    and deliver once it recovers. Playback, search and the TUI are unaffected,
+    so this must not mark the whole platform DEGRADED.
+    """
+    try:
+        sys.path.insert(0, "/home/tina/karaoke/src")
+        from datetime import datetime, timezone
+
+        from karaoke import event_store, localcache
+
+        with localcache.connect() as conn:
+            if not localcache.table_exists(conn, "events"):
+                return WARN, "events table missing (run the migration)"
+            pending = event_store.unpublished_count(conn)
+            dead = event_store.dead_letter_count(conn)
+            oldest = event_store.oldest_unpublished(conn)
+    except Exception as exc:
+        return WARN, f"relay check failed: {exc}"
+
+    if dead:
+        # Never self-heals: an operator must fix the consumer and requeue.
+        return WARN, (f"{dead} dead letter(s) — "
+                      f"karaoke-relay --status, then --retry-dead")
+
+    claimable = pending - dead
+    if not claimable:
+        return OK, "backlog empty"
+
+    age = (datetime.now(timezone.utc) - oldest).total_seconds() if oldest else 0
+    if age > RELAY_MAX_AGE:
+        return WARN, (f"{claimable} event(s) pending, oldest {int(age)}s "
+                      f"(> {RELAY_MAX_AGE}s) — is karaoke-relay running?")
+    return OK, f"{claimable} pending, oldest {int(age)}s"
+
+
+def check_opensearch() -> tuple[str, str]:
+    """Vector search. Reached through a kind extraPortMapping, not a
+    port-forward, so it comes back with the cluster container rather than
+    needing a host service."""
+    url = OPENSEARCH_URL
+    return (OK, url) if _http_ok(url) else (
+        FAIL, f"{url} unreachable (is the kind cluster up?)")
+
+
+def check_mcp() -> tuple[str, str]:
+    """The MCP server, which is how Claude and Obot reach the library."""
+    url = f"http://127.0.0.1:{MCP_PORT}/health"
+    return (OK, url) if _http_ok(url) else (
+        FAIL, f"{url} unreachable (start karaoke-mcp)")
+
+
+def check_webtui() -> tuple[str, str]:
+    return (OK, f"127.0.0.1:{WEBTUI_PORT}") if _tcp_ok("127.0.0.1", WEBTUI_PORT) else (
+        WARN, f"127.0.0.1:{WEBTUI_PORT} down (start karaoke-webtui)")
+
+
+def check_ollama() -> tuple[str, str]:
+    """Only a warning: the DJ booth falls back to deterministic library tools
+    when the model is unavailable, so the room keeps working without it."""
+    return (OK, f"127.0.0.1:{OLLAMA_PORT}") if _tcp_ok("127.0.0.1", OLLAMA_PORT) else (
+        WARN, f"127.0.0.1:{OLLAMA_PORT} down (DJ chat degrades to library tools)")
+
+
+def check_obot_tunnel() -> tuple[str, str]:
+    """The gateway's only route to the library: Obot rejects MCP URLs that
+    resolve to a private IP, so it reaches :8888 through this outbound tunnel."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "is-active", "karaoke-obot-tunnel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        state = proc.stdout.strip() or "unknown"
+    except Exception as exc:
+        return WARN, f"could not query unit: {exc}"
+    return (OK, "karaoke-obot-tunnel active") if state == "active" else (
+        WARN, f"karaoke-obot-tunnel {state} (Obot cannot reach the library)")
 
 
 CHECKS = [
@@ -119,7 +213,13 @@ CHECKS = [
     ("rabbitmq-mgmt", check_mq_mgmt, False),
     ("kind-pods", check_kind_pods, True),
     ("kiosk-chrome", check_kiosk_chrome, False),
-    ("sqlite-db", check_sqlite, True),
+    ("postgres-db", check_database, True),
+    ("relay-backlog", check_relay_backlog, False),
+    ("opensearch", check_opensearch, True),
+    ("mcp-server", check_mcp, True),
+    ("web-tui", check_webtui, False),
+    ("ollama", check_ollama, False),
+    ("obot-tunnel", check_obot_tunnel, False),
 ]
 
 

@@ -90,10 +90,10 @@ def conn(tmp_path):
     from karaoke import localcache
 
     c = localcache.connect(tmp_path / "t.db")
-    c.executescript("""
+    c.execute("""
         INSERT INTO tracks (track_id, artist, title, album) VALUES
             (1, 'Pink Floyd', 'Fearless', 'Meddle'),
-            (2, 'Blue Oyster Cult', "(Don't Fear) The Reaper", ''),
+            (2, 'Blue Oyster Cult', '(Don''t Fear) The Reaper', ''),
             (3, 'Fearless Band', 'Something Else', ''),
             (4, 'Someone', 'Unrelated', '');
         INSERT INTO lyrics (track_id, kind, plain_lyrics) VALUES
@@ -215,7 +215,7 @@ def test_a_known_artist_blocks_the_swap(tmp_path):
 
     conn = localcache.connect(tmp_path / "t.db")
     try:
-        conn.executescript("""
+        conn.execute("""
             INSERT INTO tracks (track_id, artist, title) VALUES
                 (1, 'Tom Waits', 'Mighty Ships'),
                 (2, 'Tom Waits', 'Army Ants'),
@@ -234,7 +234,7 @@ def test_search_with_genre_filter(tmp_path):
 
     conn = localcache.connect(tmp_path / "genre_search.db")
     try:
-        conn.executescript("""
+        conn.execute("""
             INSERT INTO tracks (track_id, artist, title) VALUES
                 (1, 'Artist A', 'Nothing Else Matters'),
                 (2, 'Artist B', 'Nothing Compares'),
@@ -263,4 +263,19 @@ def test_search_with_genre_filter(tmp_path):
         assert len(none_hits) == 0
     finally:
         conn.close()
+
+
+def test_typo_matches_artist_and_avoids_short_word_false_positives():
+    """Searching 'slyer' matches 'Slayer', but not short words like 'yer'."""
+    assert ls.field_score("Slayer", "slyer") > 0
+    assert ls.field_score("Shut Up n Play Yer Guitar", "slyer") == 0.0
+    assert ls.field_score("Flyers Crusade", "slyer") == 0.0
+
+
+def test_exact_artist_outranks_fuzzy_title():
+    """An exact artist match (Slayer) must outrank a fuzzy title match (Player)."""
+    slayer_song = ls.score_row(_row(artist="Slayer", title="War Ensemble"), "slayer")[0]
+    player_song = ls.score_row(_row(artist="Somebody", title="The Poker Player"), "slayer")[0]
+    assert slayer_song > player_song
+
 

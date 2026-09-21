@@ -408,7 +408,7 @@ def record_status() -> dict[str, Any]:
 
 @app.post("/api/recordings/{recording_id}/analyse")
 def record_analyse(recording_id: int, background: BackgroundTasks,
-                   keep: bool = False) -> dict[str, Any]:
+                   keep: bool = True, prune_after: bool = False) -> dict[str, Any]:
     """Decompile a recording into the database.
 
     Returns immediately: analysing a couple of hours takes minutes, which no
@@ -425,9 +425,12 @@ def record_analyse(recording_id: int, background: BackgroundTasks,
         raise HTTPException(status_code=409,
                             detail="Recording is still capturing; stop it first")
 
+    # Retention is no longer a side effect of analysing: a caller asking to
+    # decompile one session should not silently drop another past the age or
+    # size cap. `keep` is accepted and ignored; it is now the default.
     job_id = jobs.create_job()
     background.add_task(jobs.run_job, job_id, recording_worker.analyse, recording_id,
-                        keep=True if keep else None)
+                        prune_after=prune_after)
     return {"status": "accepted", "recording_id": recording_id, "job_id": job_id}
 
 

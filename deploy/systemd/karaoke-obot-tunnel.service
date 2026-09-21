@@ -1,0 +1,34 @@
+[Unit]
+Description=Obot MCP tunnel (exposes the local MCP server to the Obot gateway)
+Documentation=file:///home/tina/karaoke/docs/mcp-server.md
+After=network-online.target karaoke-mcp.service
+Wants=network-online.target
+PartOf=karaoke.target
+
+# karaoke-mcp is wanted, not required. The tunnel dials out to Obot and only
+# proxies to :8888 when a request actually arrives, so it is useful before the
+# MCP server is up and reconnects on its own afterwards. A hard Requires= would
+# also tear the tunnel down on every karaoke-mcp restart, dropping the gateway
+# connection for no reason.
+Wants=karaoke-mcp.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tina/karaoke
+
+# Holds OBOT_BASE_URL and OBOT_TUNNEL_TOKEN. Kept outside the repo, mode 0600:
+# the token is a bearer credential that lets its holder register as this tunnel.
+# Shown once by Obot at creation and not retrievable afterwards -- losing it
+# means creating a replacement tunnel.
+EnvironmentFile=/home/tina/.config/obot/tunnel.env
+ExecStart=/home/tina/.local/bin/obot tunnel
+SyslogIdentifier=karaoke-obot-tunnel
+
+# Obot rejects MCP server URLs resolving to a private IP, so this process is the
+# only route the gateway has to the library. It should come back from a dropped
+# connection or an Obot restart without intervention.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=karaoke.target

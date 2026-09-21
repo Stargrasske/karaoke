@@ -204,7 +204,7 @@ def test_a_blank_album_does_not_erase_a_known_one(tmp_path):
         conn.commit()
         record_gap(Detection(mode="scan", player="vlc", artist="A", title="B",
                              url="https://youtu.be/x", album=""), conn)
-        assert conn.execute("SELECT album FROM tracks").fetchone()[0] == "Known Album"
+        assert conn.execute("SELECT album FROM tracks").fetchone()["album"] == "Known Album"
     finally:
         conn.close()
 
@@ -244,6 +244,6 @@ def test_an_unknown_duration_does_not_erase_a_known_one(tmp_path):
         conn.commit()
         record_gap(Detection(mode="scan", player="vlc", artist="A", title="B",
                              url="https://youtu.be/x", duration=None), conn)
-        assert conn.execute("SELECT duration FROM tracks").fetchone()[0] == 300.0
+        assert conn.execute("SELECT duration FROM tracks").fetchone()["duration"] == 300.0
     finally:
         conn.close()

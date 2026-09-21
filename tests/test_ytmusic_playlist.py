@@ -95,8 +95,7 @@ def test_create_temp_queue_playlist_overwrites_daily_playlist():
 
 
 def test_get_latest_temp_queue_playlist_fetches_and_maps():
-    client = MagicMock(spec=YTMusicClient)
-    client.is_authenticated = True
+    client = MagicMock()
     client.get_library_playlists.return_value = [
         {"title": "Karaoke Temp Queue 2026-09-11", "playlistId": "PL_LATEST"},
         {"title": "Karaoke Temp Queue 2026-09-10", "playlistId": "PL_OLDER"},
@@ -107,26 +106,25 @@ def test_get_latest_temp_queue_playlist_fetches_and_maps():
         ],
     }
 
-    db_conn = sqlite3.connect(":memory:")
-    db_conn.row_factory = sqlite3.Row
-    db_conn.executescript(
-        """
-        CREATE TABLE tracks (track_id INTEGER PRIMARY KEY, artist TEXT, title TEXT);
-        CREATE TABLE sources (source_id INTEGER PRIMARY KEY, track_id INTEGER, kind TEXT, url TEXT);
-        CREATE TABLE track_analysis (track_id INTEGER PRIMARY KEY, detected_key TEXT, bpm REAL, energy REAL);
-        CREATE TABLE track_genre (track_id INTEGER PRIMARY KEY, genre TEXT);
-        INSERT INTO tracks VALUES (1, 'Artist One', 'Track One');
-        INSERT INTO sources VALUES (1, 1, 'youtube_music', 'https://music.youtube.com/watch?v=VID12345678');
-        INSERT INTO track_analysis VALUES (1, 'C major', 120.0, 0.75);
-        INSERT INTO track_genre VALUES (1, 'Pop');
-        """
-    )
+    db_conn = localcache.connect()
+    with db_conn:
+        from karaoke.lyrics import Lyrics
+        localcache.add_track_and_lyrics("Artist One", "Track One", Lyrics(), conn=db_conn)
+        tid = localcache.find_track_id("Artist One", "Track One", conn=db_conn)
+        db_conn.execute("INSERT INTO sources (track_id, kind, url) VALUES (%s, %s, %s)",
+                        (tid, 'youtube_music', 'https://music.youtube.com/watch?v=VID12345678'))
+        import time
+        db_conn.execute("INSERT INTO track_genre (track_id, genre, labelled_at) VALUES (%s, %s, %s)", (tid, 'Pop', time.time()))
+        from karaoke import track_analysis
+        from karaoke.analyze import parse_key
+        track_analysis.save_detected(tid, detected_key=parse_key("C major"), bpm=120.0, energy=0.75, source_kind="test", conn=db_conn)
+
 
     res = yp.get_latest_temp_queue_playlist(client=client, conn=db_conn)
     assert res is not None
     assert res["playlist_id"] == "PL_LATEST"
     assert len(res["rows"]) == 1
-    assert res["rows"][0]["track_id"] == 1
+    assert res["rows"][0]["track_id"] == tid
     assert res["rows"][0]["artist"] == "Artist One"
     assert res["rows"][0]["genre"] == "Pop"
 

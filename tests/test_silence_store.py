@@ -19,7 +19,7 @@ from karaoke.silence import Silence
 def conn(tmp_path):
     c = localcache.connect(tmp_path / "silence.db")
     c.execute("INSERT INTO recordings (started_at, source, dir, status) "
-              "VALUES (?, ?, ?, ?)", (1000.0, "monitor", "", "complete"))
+              "VALUES (%s, %s, %s, %s)", (1000.0, "monitor", "", "complete"))
     c.commit()
     yield c
     c.close()
@@ -72,7 +72,7 @@ def test_the_tables_are_added_to_a_database_predating_them(tmp_path):
     c = localcache.connect(path)
     try:
         names = {r["name"] for r in
-                 c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                 c.execute("SELECT table_name as name FROM information_schema.tables WHERE table_schema='public'")}
         assert {"recording_silence", "recording_silence_scans"} <= names
     finally:
         c.close()

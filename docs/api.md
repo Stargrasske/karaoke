@@ -200,6 +200,10 @@ for the equivalent on the host-side control API (recording analysis, folder scan
 
 ::: karaoke.moodframe
 
+## Free-Text Mood and Vibe Matching
+
+::: karaoke.mood_match
+
 ## Musical Scales, Keys, and Theory Helpers
 
 ::: karaoke.musictheory
@@ -348,6 +352,38 @@ for the equivalent on the host-side control API (recording analysis, folder scan
 ## Stage View
 
 ::: karaoke.stage_view
+
+
+## Cache Ingest
+
+::: karaoke.cache_ingest
+
+
+## Event Store
+
+::: karaoke.event_store
+
+## Relay
+
+::: karaoke.relay
+
+
+## Dj Chat
+
+::: karaoke.dj_chat
+
+## Mcp Server
+
+::: karaoke.mcp_server
+
+
+## Chords
+
+::: karaoke.chords
+
+## Key Progression
+
+::: karaoke.key_progression
 
 ## `GET /api/workers/status`
 
