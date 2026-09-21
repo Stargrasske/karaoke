@@ -25,7 +25,7 @@ def conn(tmp_path):
     for artist, title in (("GAUPA", "Febersvan"),
                           ("King Buffalo", "Locusts"),
                           ("TOOL", "Opiate²")):
-        c.execute("INSERT INTO tracks (artist, title) VALUES (?, ?)",
+        c.execute("INSERT INTO tracks (artist, title) VALUES (%s, %s)",
                   (artist, title))
     c.commit()
     yield c
@@ -75,7 +75,7 @@ def test_the_table_is_added_to_a_database_predating_it(tmp_path):
     c = localcache.connect(path)
     try:
         names = {r["name"] for r in
-                 c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                 c.execute("SELECT table_name as name FROM information_schema.tables WHERE table_schema='public'")}
         assert "alignment_support" in names
     finally:
         c.close()

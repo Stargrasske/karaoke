@@ -26,7 +26,8 @@ multiply it by the track count for no gain.
 from __future__ import annotations
 
 import hashlib
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 import zlib
 from pathlib import Path
@@ -108,9 +109,9 @@ def rescale(pixels: Grid, cols: int, rows: int) -> Optional[Grid]:
     return out
 
 
-def ensure_table(conn: sqlite3.Connection) -> None:
+def ensure_table(conn: Connection) -> None:
     """Create the art tables in databases predating them."""
-    conn.executescript("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS cover_art (
             art_key    TEXT PRIMARY KEY,
             cols       INTEGER NOT NULL,
@@ -131,7 +132,7 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def store(pixels: Grid, conn: sqlite3.Connection, *,
+def store(pixels: Grid, conn: Connection, *,
           source_url: str = "") -> Optional[str]:
     """Keep one grid, returning its key."""
     if not pixels or not pixels[0]:
@@ -140,7 +141,7 @@ def store(pixels: Grid, conn: sqlite3.Connection, *,
     conn.execute(
         """
         INSERT INTO cover_art (art_key, cols, rows, pixels, source_url, stored_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT(art_key) DO UPDATE SET
             source_url = CASE WHEN excluded.source_url != ''
                               THEN excluded.source_url ELSE cover_art.source_url END
@@ -151,17 +152,17 @@ def store(pixels: Grid, conn: sqlite3.Connection, *,
     return key
 
 
-def link(track_id: int, key: str, conn: sqlite3.Connection) -> None:
+def link(track_id: int, key: str, conn: Connection) -> None:
     """Point a track at a stored cover."""
     conn.execute(
-        "INSERT INTO track_art (track_id, art_key, noted_at) VALUES (?, ?, ?)"
+        "INSERT INTO track_art (track_id, art_key, noted_at) VALUES (%s, %s, %s)"
         " ON CONFLICT(track_id) DO UPDATE SET art_key = excluded.art_key,"
         " noted_at = excluded.noted_at",
         (track_id, key, time.time()))
     conn.commit()
 
 
-def capture(track_id: int, source: Path, conn: sqlite3.Connection, *,
+def capture(track_id: int, source: Path, conn: Connection, *,
             source_url: str = "") -> Optional[str]:
     """Sample a local image or video frame and keep it for this track."""
     from . import coverart
@@ -185,11 +186,11 @@ def capture(track_id: int, source: Path, conn: sqlite3.Connection, *,
     return key
 
 
-def grid_for_track(track_id: int, conn: sqlite3.Connection) -> Optional[Grid]:
+def grid_for_track(track_id: int, conn: Connection) -> Optional[Grid]:
     """The stored grid for a track, at its stored resolution."""
     row = conn.execute(
         "SELECT a.cols, a.rows, a.pixels FROM track_art t"
-        " JOIN cover_art a ON a.art_key = t.art_key WHERE t.track_id = ?",
+        " JOIN cover_art a ON a.art_key = t.art_key WHERE t.track_id = %s",
         (track_id,)).fetchone()
     if row is None:
         return None
@@ -197,7 +198,7 @@ def grid_for_track(track_id: int, conn: sqlite3.Connection) -> Optional[Grid]:
 
 
 def render_for_track(track_id: int, cols: int, rows: int,
-                     conn: sqlite3.Connection, *, pad_to: int = 0):
+                     conn: Connection, *, pad_to: int = 0):
     """Stored art fitted to a panel, or None.
 
     The point of the whole module: this keeps working after the source URL has
@@ -221,7 +222,7 @@ def render_for_track(track_id: int, cols: int, rows: int,
     return coverart.to_text(fitted, pad_to=pad_to)
 
 
-def stats(conn: sqlite3.Connection) -> dict[str, Any]:
+def stats(conn: Connection) -> dict[str, Any]:
     """How much art is kept, and how much sharing it is doing."""
     row = conn.execute(
         "SELECT count(*) AS covers, COALESCE(sum(length(pixels)), 0) AS bytes"

@@ -142,11 +142,11 @@ def test_rows_carry_what_the_display_needs(tmp_path, monkeypatch):
 
     conn = localcache.connect(tmp_path / "browse.db")
     conn.execute("INSERT INTO recordings (started_at, source, dir, status) "
-                 "VALUES (?, ?, ?, ?)", (1000.0, "monitor", str(tmp_path), "complete"))
+                 "VALUES (%s, %s, %s, %s)", (1000.0, "monitor", str(tmp_path), "complete"))
     for at_wall, offset in ((1030.0, 30.0), (1075.0, 75.0)):
         conn.execute(
             "INSERT INTO recording_marks (recording_id, at_wall, at_offset,"
-            " artist, title, ok) VALUES (1, ?, ?, 'Portishead', 'Glory Box', 1)",
+            " artist, title, ok) VALUES (1, %s, %s, 'Portishead', 'Glory Box', 1)",
             (at_wall, offset))
     conn.commit()
 

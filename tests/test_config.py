@@ -65,32 +65,3 @@ def test_db_backend_postgres_is_recognised(monkeypatch):
     settings = Settings.load()
     assert settings.uses_postgres is True
     assert settings.db_url == "postgresql://karaoke@localhost/karaoke"
-
-
-def test_connect_rejects_unimplemented_postgres(monkeypatch):
-    """connect() must fail loudly, never silently fall back to SQLite."""
-    import karaoke.localcache as localcache
-    from karaoke.config import Settings
-
-    monkeypatch.setenv("KARAOKE_DB_BACKEND", "postgres")
-    monkeypatch.setattr(localcache, "settings", Settings.load())
-    try:
-        localcache.connect()
-    except NotImplementedError as exc:
-        assert "postgres" in str(exc).lower()
-    else:  # pragma: no cover - guard regressed
-        raise AssertionError("connect() should reject the postgres backend")
-
-
-def test_connect_with_explicit_path_ignores_backend(tmp_path, monkeypatch):
-    """An explicit db_path (tests, tools) always opens SQLite regardless."""
-    import karaoke.localcache as localcache
-    from karaoke.config import Settings
-
-    monkeypatch.setenv("KARAOKE_DB_BACKEND", "postgres")
-    monkeypatch.setattr(localcache, "settings", Settings.load())
-    conn = localcache.connect(tmp_path / "explicit.db")
-    try:
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-    finally:
-        conn.close()

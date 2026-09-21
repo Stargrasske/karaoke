@@ -16,7 +16,8 @@ karaoke-app-development skill) before trusting artist/title.
 from __future__ import annotations
 
 import shutil
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
@@ -204,7 +205,7 @@ def launch_spotify() -> tuple[bool, str]:
 
 
 def resolve_lyrics(
-    det: Detection, conn: sqlite3.Connection
+    det: Detection, conn: Connection
 ) -> tuple[str, str, Optional[Lyrics]]:
     """Resolve (artist, title, lyrics) for a detection from the local cache.
 
@@ -237,7 +238,7 @@ def resolve_lyrics(
             track_id = localcache.find_track_id(det.artist, cleaned, conn)
             if track_id is not None:
                 row = conn.execute(
-                    "SELECT artist, title FROM tracks WHERE track_id = ?",
+                    "SELECT artist, title FROM tracks WHERE track_id = %s",
                     (track_id,),
                 ).fetchone()
                 return (
@@ -252,7 +253,7 @@ def resolve_lyrics(
         relaxed = localcache.find_track_id_relaxed(det.artist, det.title, conn)
         if relaxed is not None:
             row = conn.execute(
-                "SELECT artist, title FROM tracks WHERE track_id = ?",
+                "SELECT artist, title FROM tracks WHERE track_id = %s",
                 (relaxed,),
             ).fetchone()
             return (
@@ -266,7 +267,7 @@ def resolve_lyrics(
             cur.execute(
                 """
                 SELECT t.track_id, t.artist, t.title FROM tracks t
-                WHERE lower(t.title) = lower(?)
+                WHERE lower(t.title) = lower(%s)
                 ORDER BY EXISTS(SELECT 1 FROM lyrics l WHERE l.track_id = t.track_id AND l.synced_lyrics != '') DESC, t.track_id DESC
                 LIMIT 1
                 """,
@@ -282,7 +283,7 @@ def resolve_lyrics(
     return det.artist, det.title, None
 
 
-def record_gap(det: Detection, conn: sqlite3.Connection) -> None:
+def record_gap(det: Detection, conn: Connection) -> None:
     """Persist a missing-lyrics detection so it can be backfilled/staged.
 
     Stores the source (track + URL) when we have a real title, and logs a

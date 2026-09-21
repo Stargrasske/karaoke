@@ -6,7 +6,8 @@ the existing ``tracks`` schema is untouched. The reconciliation logic lives in
 """
 from __future__ import annotations
 
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS track_analysis (
 );
 
 CREATE TABLE IF NOT EXISTS track_analysis_history (
-    history_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    history_id      SERIAL PRIMARY KEY,
     track_id        INTEGER NOT NULL,
     source_kind     TEXT DEFAULT '',
     detected_key    TEXT DEFAULT '',
@@ -78,16 +79,16 @@ class TrackAnalysis:
     brightness: Optional[float] = None
 
 
-def ensure_schema(conn: sqlite3.Connection) -> None:
+def ensure_schema(conn: Connection) -> None:
     """Create the analysis table (and add newer columns) in the local cache DB."""
-    conn.executescript(_SCHEMA)
+    conn.execute(_SCHEMA)
     existing = {
-        row[1] for row in conn.execute("PRAGMA table_info(track_analysis)")
+        row["name"] for row in conn.execute("SELECT column_name as name FROM information_schema.columns WHERE table_name = %s", ("track_analysis",))
     }
     for col, coltype in _ADDED_COLUMNS.items():
         if col not in existing:
             conn.execute(f"ALTER TABLE track_analysis ADD COLUMN {col} {coltype}")
-    history_count = conn.execute("SELECT COUNT(*) FROM track_analysis_history").fetchone()[0]
+    history_count = conn.execute("SELECT COUNT(*) FROM track_analysis_history").fetchone()["count"]
     if history_count == 0:
         conn.execute(
             """
@@ -103,7 +104,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _row_to_analysis(row: sqlite3.Row) -> TrackAnalysis:
+def _row_to_analysis(row: dict) -> TrackAnalysis:
     keys = row.keys()
     return TrackAnalysis(
         track_id=int(row["track_id"]),
@@ -123,11 +124,11 @@ def _row_to_analysis(row: sqlite3.Row) -> TrackAnalysis:
     )
 
 
-def get_analysis(track_id: int, conn: sqlite3.Connection) -> Optional[TrackAnalysis]:
+def get_analysis(track_id: int, conn: Connection) -> Optional[TrackAnalysis]:
     """Return the stored analysis for a track, or None."""
     ensure_schema(conn)
     row = conn.execute(
-        "SELECT * FROM track_analysis WHERE track_id = ?", (track_id,)
+        "SELECT * FROM track_analysis WHERE track_id = %s", (track_id,)
     ).fetchone()
     return _row_to_analysis(row) if row else None
 
@@ -148,7 +149,7 @@ def save_detected(
     energy: Optional[float] = None,
     brightness: Optional[float] = None,
     source_kind: str = "",
-    conn: sqlite3.Connection,
+    conn: Connection,
 ) -> TrackAnalysis:
     """Upsert a locally-detected key/tempo/energy analysis and re-reconcile.
 
@@ -167,7 +168,7 @@ def save_detected(
             (track_id, detected_key, key_confidence, key_agreement,
              reference_key, reference_src, resolved_key, key_relation,
              bpm, method, energy, brightness, analyzer_version, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT(track_id) DO UPDATE SET
             detected_key = excluded.detected_key,
             key_confidence = excluded.key_confidence,
@@ -194,7 +195,7 @@ def save_detected(
         INSERT INTO track_analysis_history
             (track_id, source_kind, detected_key, key_confidence, key_agreement,
              bpm, method, energy, brightness, analyzer_version, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             track_id, source_kind or method, _key_name(detected_key), key_confidence, key_agreement,
@@ -207,7 +208,7 @@ def save_detected(
     return result
 
 
-def get_analysis_history(track_id: int, conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def get_analysis_history(track_id: int, conn: Connection) -> list[dict[str, Any]]:
     """Return all historical analysis versions for a track, newest first."""
     ensure_schema(conn)
     rows = conn.execute(
@@ -215,7 +216,7 @@ def get_analysis_history(track_id: int, conn: sqlite3.Connection) -> list[dict[s
         SELECT history_id, track_id, source_kind, detected_key, key_confidence,
                key_agreement, bpm, method, energy, brightness, analyzer_version, created_at
         FROM track_analysis_history
-        WHERE track_id = ?
+        WHERE track_id = %s
         ORDER BY history_id DESC
         """,
         (track_id,),
@@ -244,7 +245,7 @@ def verify_key(
     reference: Key | str,
     *,
     reference_src: str = "online",
-    conn: sqlite3.Connection,
+    conn: Connection,
 ) -> KeyReconciliation:
     """Reconcile a stored detected key against an online/reference key.
 
@@ -262,7 +263,7 @@ def verify_key(
         INSERT INTO track_analysis
             (track_id, reference_key, reference_src, resolved_key,
              key_relation, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT(track_id) DO UPDATE SET
             reference_key = excluded.reference_key,
             reference_src = excluded.reference_src,

@@ -50,13 +50,7 @@ def _embedding_text(row: Any) -> str:
 def iter_track_rows(conn: Any) -> Iterable[Any]:
     """Yield one row per SQLite track with preferred source, approved lyrics, and audio genre."""
     cur = conn.cursor()
-    has_track_genre = True
-    try:
-        t_cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='track_genre'")
-        if not t_cur.fetchone():
-            has_track_genre = False
-    except Exception:
-        has_track_genre = False
+    has_track_genre = localcache.table_exists(conn, "track_genre")
 
     genre_cols = "tg.genre AS audio_genre, tg.runner_up AS audio_genre_runner_up" if has_track_genre else "'' AS audio_genre, '' AS audio_genre_runner_up"
     genre_join = "LEFT JOIN track_genre tg ON tg.track_id = t.track_id" if has_track_genre else ""
@@ -631,9 +625,9 @@ def vector_index_status(
         conn = localcache.connect(None if db_path is None else Path(db_path))
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM tracks")
+            cursor.execute("SELECT COUNT(*) AS count FROM tracks")
             row = cursor.fetchone()
-            db_tracks = row[0] if row else 0
+            db_tracks = row["count"] if row else 0
         finally:
             conn.close()
     except Exception as exc:

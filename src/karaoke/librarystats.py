@@ -10,7 +10,8 @@ cheap on a large library.
 """
 from __future__ import annotations
 
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,22 +44,22 @@ class LibraryStats:
         return self.synced / self.tracks if self.tracks else 0.0
 
 
-def _scalar(conn: sqlite3.Connection, sql: str) -> int:
+def _scalar(conn: Connection, sql: str) -> int:
     try:
         row = conn.execute(sql).fetchone()
-    except sqlite3.Error:
+    except psycopg.Error:
         return 0
-    return int(row[0] or 0) if row else 0
+    return int(list(row.values())[0] or 0) if row else 0
 
 
-def _pairs(conn: sqlite3.Connection, sql: str) -> list[tuple[str, int]]:
+def _pairs(conn: Connection, sql: str) -> list[tuple[str, int]]:
     try:
-        return [(str(r[0]), int(r[1])) for r in conn.execute(sql) if r[0] is not None]
-    except sqlite3.Error:
+        return [(str(list(r.values())[0]), int(list(r.values())[1])) for r in conn.execute(sql) if list(r.values())[0] is not None]
+    except psycopg.Error:
         return []
 
 
-def collect(conn: Optional[sqlite3.Connection] = None) -> LibraryStats:
+def collect(conn: Optional[Connection] = None) -> LibraryStats:
     """Gather library and pipeline statistics."""
     from . import localcache
 
@@ -80,7 +81,7 @@ def collect(conn: Optional[sqlite3.Connection] = None) -> LibraryStats:
                                 " WHERE bpm IS NOT NULL"),
             # Enhanced LRC carries per-word tags in angle brackets.
             word_timed=_scalar(c, f"SELECT count(*) {approved}"
-                                  " AND synced_lyrics LIKE '%<%'"),
+                                  " AND synced_lyrics LIKE '%%<%%'"),
             lyric_sources=_pairs(c, f"SELECT source, count(*) n {approved}"
                                     " GROUP BY source ORDER BY n DESC"),
             gaps=_pairs(c, "SELECT status, count(*) n FROM lyric_gaps"

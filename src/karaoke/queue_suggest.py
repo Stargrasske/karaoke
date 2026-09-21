@@ -13,7 +13,8 @@ This is query-by-example: it needs no lyrics, so it works for instrumentals too.
 """
 from __future__ import annotations
 
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -72,9 +73,9 @@ def _seed_neighbours(track_id: int, k: int,
                     SELECT t.track_id, t.artist, t.title, COALESCE(g.score, 0.8) as score
                     FROM tracks t
                     JOIN track_genre g ON g.track_id = t.track_id
-                    WHERE lower(trim(g.genre)) = ? AND t.track_id != ?
+                    WHERE lower(trim(g.genre)) = %s AND t.track_id != %s
                     ORDER BY g.score DESC
-                    LIMIT ?
+                    LIMIT %s
                     """,
                     (seed_genre, track_id, k),
                 ).fetchall()
@@ -160,10 +161,10 @@ def suggest_for_queue(track_ids: list[int], *, limit: int = 10,
     return out
 
 
-def playable_url(track_id: int, conn: sqlite3.Connection) -> Optional[str]:
+def playable_url(track_id: int, conn: Connection) -> Optional[str]:
     """A URL to play a suggested track from, preferring YouTube like browse."""
     row = conn.execute(
-        "SELECT url FROM sources WHERE track_id = ?"
-        " ORDER BY CASE WHEN url LIKE '%youtu%' THEN 0 ELSE 1 END, source_id"
+        "SELECT url FROM sources WHERE track_id = %s"
+        " ORDER BY CASE WHEN url LIKE '%%youtu%%' THEN 0 ELSE 1 END, source_id"
         " LIMIT 1", (track_id,)).fetchone()
     return row["url"] if row and row["url"] else None

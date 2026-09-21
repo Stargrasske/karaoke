@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import argparse
 import re
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -107,7 +108,7 @@ def extract_track_uri(url: str) -> str:
     return f"spotify:track:{m.group(1)}" if m else ""
 
 
-def karaoke_tracks(conn: sqlite3.Connection) -> list[Candidate]:
+def karaoke_tracks(conn: Connection) -> list[Candidate]:
     """Return tracks that have approved synced lyrics, with any stored URI.
 
     A left join keeps tracks whose only source is YouTube; those fall through
@@ -125,8 +126,7 @@ def karaoke_tracks(conn: sqlite3.Connection) -> list[Candidate]:
           AND length(COALESCE(l.synced_lyrics, '')) > 0
           AND length(TRIM(COALESCE(t.artist, ''))) > 0
           AND length(TRIM(COALESCE(t.title, ''))) > 0
-        GROUP BY t.track_id
-        ORDER BY t.artist COLLATE NOCASE, t.title COLLATE NOCASE
+                ORDER BY lower(t.artist), lower(t.title)
         """
     ).fetchall()
 
@@ -144,7 +144,7 @@ def resolve_uris(
     candidates: list[Candidate],
     client,
     *,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> bool:
     """Fill in missing URIs via Spotify search, in place.
 
@@ -180,7 +180,7 @@ def resolve_uris(
     return True
 
 
-def _remember_uri(c: Candidate, conn: sqlite3.Connection) -> None:
+def _remember_uri(c: Candidate, conn: Connection) -> None:
     """Persist a searched-out URI as a spotify source, best-effort."""
     try:
         track_id = c.uri.rsplit(":", 1)[-1]
@@ -200,7 +200,7 @@ def build_playlist(
     public: bool = False,
     dry_run: bool = False,
     client=None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> PlaylistResult:
     """Create or update the karaoke playlist and return what happened.
 

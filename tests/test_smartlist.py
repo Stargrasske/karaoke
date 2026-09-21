@@ -155,7 +155,7 @@ def test_sparse_lyrics_are_kept_out_of_the_pool(tmp_path):
 
     conn = localcache.connect(tmp_path / "t.db")
     try:
-        conn.executescript("""
+        conn.execute("""
             INSERT INTO tracks (track_id, artist, title) VALUES
                 (1, 'A', 'Rich'), (2, 'B', 'Sparse');
             INSERT INTO lyrics (track_id, kind, plain_lyrics) VALUES

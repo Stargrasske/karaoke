@@ -287,19 +287,21 @@ need that once per track.
 
 ```mermaid
 flowchart TD
-    A[track playing, no cached lyrics] --> B[fetch_lrclib]
-    B -- found --> Z[store: lrclib]
-    B -- nothing --> C[ytmusic_lyrics.read_panel<br/>over the existing CDP connection]
+    A[track playing, no cached lyrics or plain-only] --> B[fetch_lrclib<br/>clean_artist + clean_page_title]
+    B -- synced found --> Z[store: lrclib synced]
+    B -- nothing / plain only --> C[ytmusic_lyrics.read_panel<br/>over the existing CDP connection]
     C --> C1{panel present<br/>and >= 4 lines?}
     C1 -- no --> E1[give up: no words anywhere]
     C1 -- yes --> D{does the player agree<br/>it is this track?}
     D -- no --> E2[discard: the panel lags a track change]
-    D -- yes --> F[store as plain<br/>source = ytmusic_panel_&lt;provider&gt;]
+    D -- yes --> F[store as plain<br/>NEVER downgrade existing synced]
     F --> G{has downloadable audio?}
     G -- no --> E3[stop: nothing to align against]
     G -- yes --> H[enqueue 'sync']
-    subgraph worker[post-processing worker]
-        H --> I[_ensure_download: the whole track]
+    subgraph worker[post-processing worker: 'sync']
+        H --> H1{fast online check<br/>fetch_lrclib synced?}
+        H1 -- yes --> H2[store: lrclib synced<br/>finished in ~100ms]
+        H1 -- no --> I[_ensure_download: the whole track]
         I --> J[transcribe_to_words<br/>Whisper, timings only]
         J --> K[align_lyrics_to_lrc<br/>real words + Whisper rhythm]
         K --> L{any timestamps produced?}
@@ -309,6 +311,15 @@ flowchart TD
 ```
 
 ### Why each guard is there
+
+**Never downgrade synced lyrics.** If SQLite already holds approved synced
+lyrics for a track, an untimed plain text payload from the YouTube Music lyrics
+panel or captions will never overwrite or erase the timestamps.
+
+**The worker checks online before running Whisper.** Transcribing and aligning
+with Whisper takes full audio downloads and heavy CPU/GPU time. The worker first
+checks LRCLIB with normalized metadata; if real synced lyrics exist, it upgrades
+instantly in ~100ms.
 
 **The panel is verified against the player.** It lags a track change by a
 moment, and attributing one song's words to another is invisible once written,

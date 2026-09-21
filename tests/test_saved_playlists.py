@@ -45,21 +45,27 @@ def test_clean_playlist_name_for_query():
 
 def test_record_and_get_saved_searches(tmp_path):
     c = _conn(tmp_path)
+    c.execute("DELETE FROM saved_searches WHERE query IN ('radiohead', 'queen')")
+    c.commit()
 
-    localcache.record_search_query("Radiohead", result_count=12, conn=c)
-    localcache.record_search_query("Queen", result_count=5, conn=c)
-    # Searching Radiohead again should bump use_count
-    localcache.record_search_query("radiohead", result_count=12, conn=c)
+    try:
+        localcache.record_search_query("Radiohead", result_count=12, conn=c)
+        localcache.record_search_query("Queen", result_count=5, conn=c)
+        # Searching Radiohead again should bump use_count
+        localcache.record_search_query("radiohead", result_count=12, conn=c)
 
-    searches = localcache.get_saved_searches(conn=c)
-    assert len(searches) == 2
-    # Most recently used first
-    assert searches[0]["query"] == "radiohead"
-    assert searches[0]["use_count"] == 2
-    assert searches[0]["result_count"] == 12
+        searches = [s for s in localcache.get_saved_searches(conn=c) if s["query"] in ("radiohead", "queen")]
+        assert len(searches) == 2
+        # Most recently used first
+        assert searches[0]["query"] == "radiohead"
+        assert searches[0]["use_count"] == 2
+        assert searches[0]["result_count"] == 12
 
-    assert searches[1]["query"] == "Queen"
-    assert searches[1]["use_count"] == 1
+        assert searches[1]["query"].lower() == "queen"
+        assert searches[1]["use_count"] == 1
+    finally:
+        c.execute("DELETE FROM saved_searches WHERE query IN ('radiohead', 'queen')")
+        c.commit()
 
 
 # --- Saved Playlists & Tracks ----------------------------------------------

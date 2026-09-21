@@ -54,7 +54,7 @@ flowchart LR
 | `embed` | Lazily loads the sentence-transformer model and creates normalized vectors. |
 | `osclient` | Creates the OpenSearch client and ensures the `tracks` index/mapping exists. |
 | `search` | Runs semantic, keyword and exact cache lookups. |
-| `localcache` | Cluster-independent SQLite lyrics cache + play/discovery stats. |
+| `localcache` | Cluster-independent PostgreSQL store: lyrics cache, track metadata, analysis, play/discovery stats. |
 | `identify` | Resolves songs from files, queries or live songrec matches. |
 | `youtube` | Resolves a SongRef from a YouTube URL (yt-dlp metadata + smart title parser). |
 | `whisper_sync` | Transcribes local audio into approximate LRC when LRCLIB has no synced lyrics. |

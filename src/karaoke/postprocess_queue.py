@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 from typing import Optional
 
 import pika
@@ -31,7 +32,7 @@ def orchestrator() -> str:
     return os.environ.get(ORCHESTRATOR_ENV, "celery").strip().lower() or "celery"
 
 
-def needs_postprocessing(track_id: int, conn: sqlite3.Connection) -> list[str]:
+def needs_postprocessing(track_id: int, conn: Connection) -> list[str]:
     """Return the list of pending post-processing tasks for a track.
 
     Possible values: ``"analysis"`` (no key/BPM row), ``"timings"`` (approved
@@ -56,18 +57,18 @@ def needs_postprocessing(track_id: int, conn: sqlite3.Connection) -> list[str]:
     # 2. Word-level timing. Missing if approved synced lyrics carry no word tags.
     cur.execute(
         "SELECT synced_lyrics, plain_lyrics FROM lyrics"
-        " WHERE track_id = ? AND kind = 'approved'",
+        " WHERE track_id = %s AND kind = 'approved'",
         (track_id,),
     )
     row = cur.fetchone()
-    if row and row[0] and not has_word_timings(row[0]):
+    if row and row["synced_lyrics"] and not has_word_timings(row["synced_lyrics"]):
         pending.append("timings")
 
     # 3. Any timing at all. Words with no timestamps cannot drive a karaoke
     # session -- and they are now arriving routinely from the player's own
     # lyrics panel, which supplies text and nothing else. Whisper can give
     # them a rhythm without being trusted for the words themselves.
-    if row and not row[0] and row[1]:
+    if row and not row["synced_lyrics"] and row["plain_lyrics"]:
         pending.append("sync")
 
     return pending
@@ -84,7 +85,7 @@ def is_downloadable(url: str) -> bool:
     return any(marker in (url or "").lower() for marker in _DOWNLOADABLE_MARKERS)
 
 
-def has_downloadable_source(track_id: int, conn: sqlite3.Connection) -> bool:
+def has_downloadable_source(track_id: int, conn: Connection) -> bool:
     """Whether any stored source for this track yields audio.
 
     A Spotify URL does not: there is no file behind it, which is the whole
@@ -92,9 +93,9 @@ def has_downloadable_source(track_id: int, conn: sqlite3.Connection) -> bool:
     """
     try:
         rows = conn.execute(
-            "SELECT url, kind FROM sources WHERE track_id = ?", (track_id,)
+            "SELECT url, kind FROM sources WHERE track_id = %s", (track_id,)
         ).fetchall()
-    except sqlite3.Error:
+    except psycopg.Error:
         return False
     for row in rows:
         if row["kind"] == "local":
@@ -106,7 +107,7 @@ def has_downloadable_source(track_id: int, conn: sqlite3.Connection) -> bool:
 
 def enqueue_if_needed(
     artist: str, title: str, url: str = "",
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> bool:
     """Publish a post-processing task only if the track actually needs work.
 

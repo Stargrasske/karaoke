@@ -32,8 +32,8 @@ K8S_NAMESPACE ?= karaoke
 
 .PHONY: help venv install install-confluence docs docs-live docs-write docs-audit docs-sync docs-confluence-prep \
         docs-confluence-publish deps-make2graph view_makeflow lint format \
-		test test-audio mic-test stats clean clean-tools browse tui browse-log dev \
-        install-audio analyze api ctrl-api \
+        test test-audio mic-test stats clean clean-tools browse tui browse-log dev \
+        install-audio analyze api ctrl-api mcp dj \
         k8s-build k8s-load k8s-deploy k8s-seed-db k8s-status k8s-logs k8s-undeploy \
         upgrade-timings upgrade-timings-dry-run \
         index-youtube-cache db-cleanup db-cleanup-dry-run vector-index vector-index-dry-run vector-status folder-scan \
@@ -155,8 +155,13 @@ recordings: ## List record-mode sessions
 recording-show: ## Show a recording's derived track list (ID=...)
 	$(PYTHON) -m karaoke.recording_worker --show $(ID)
 
-recording-analyse: ## Decompile a recording into the DB (ID=...); needs the audio venv
-	PYTHONPATH=src $(AUDIO_PY) -m karaoke.recording_worker --analyse $(ID)
+# Runs in the main venv, not $(AUDIO_VENV). This writes to Postgres, and the
+# audio venv is a DSP-only sidecar with no psycopg -- routing a database entry
+# point through it failed at import with "No module named 'psycopg'".
+# analyze_audio already delegates to the audio venv by itself when the calling
+# interpreter lacks essentia, so nothing is lost by calling this normally.
+recording-analyse: ## Decompile a recording into the DB (ID=...)
+	$(PYTHON) -m karaoke.recording_worker --analyse $(ID)
 
 analyze: ## Detect + store key/BPM for a file (FILE=... ARTIST=... TITLE=...)
 	$(PYTHON) -c "import sys; from karaoke.cli import analyze_main; sys.exit(analyze_main(['--file','$(FILE)','--artist','$(ARTIST)','--title','$(TITLE)']))"
@@ -203,6 +208,12 @@ ctrl-api: ## Launch the host-side control API (playback; needs a desktop session
 
 dev: ## Launch both APIs and the Angular dashboard
 	$(PYTHON) scripts/dev.py
+
+mcp: ## Launch the Karaoke AI DJ MCP Server (SSE on :8888 for Obot / Claude)
+	$(PYTHON) -m karaoke.mcp_server --host 0.0.0.0 --port 8888
+
+dj: ## Open the interactive Karaoke AI DJ Chat booth in terminal
+	$(PYTHON) -m karaoke.dj_chat
 
 k8s-build: ## Build the library API container image
 	# --network=host: the default docker bridge has no working DNS on this host,
@@ -296,6 +307,8 @@ systemd-install: ## Install/refresh the karaoke systemd --user units (symlinks t
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-celery-flower.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-kiosk.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-webtui.service $(HOME)/.config/systemd/user/
+	ln -sf $(CURDIR)/deploy/systemd/karaoke-relay.service $(HOME)/.config/systemd/user/
+	ln -sf $(CURDIR)/deploy/systemd/karaoke-mcp.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-postprocess@.service $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-postprocess.slice $(HOME)/.config/systemd/user/
 	ln -sf $(CURDIR)/deploy/systemd/karaoke-healthcheck.service $(HOME)/.config/systemd/user/
@@ -307,7 +320,7 @@ systemd-install: ## Install/refresh the karaoke systemd --user units (symlinks t
 
 systemd-uninstall: ## Stop and remove the karaoke systemd --user units
 	-systemctl --user disable --now karaoke.target karaoke-healthcheck.timer
-	-systemctl --user stop karaoke-api karaoke-ctrl-api karaoke-mq-forward karaoke-celery-worker karaoke-celery-flower karaoke-kiosk karaoke-webtui 'karaoke-postprocess@*'
+	-systemctl --user stop karaoke-api karaoke-ctrl-api karaoke-mq-forward karaoke-celery-worker karaoke-celery-flower karaoke-kiosk karaoke-webtui karaoke-relay 'karaoke-postprocess@*'
 	rm -f $(HOME)/.config/systemd/user/karaoke-*.service \
 	      $(HOME)/.config/systemd/user/karaoke-*.timer \
 	      $(HOME)/.config/systemd/user/karaoke-*.slice \

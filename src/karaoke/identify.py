@@ -185,9 +185,16 @@ def identify_file_fingerprint(path: str | Path, duration_s: float = 10.0) -> Opt
         except Exception:
             return None
 
-        cmd_rec = ["songrec", "recognize", "-d", str(slice_wav), "-j"]
+        # The file is a positional argument. `-d` is --audio-device, so the
+        # old form asked songrec to treat the path as a microphone name: it
+        # printed the device list to stdout, json.loads failed, and every
+        # fingerprint attempt returned None. Whole-library scans reported
+        # `fingerprinted: 0` for months without ever erroring.
+        cmd_rec = ["songrec", "recognize", str(slice_wav), "-j"]
         try:
-            out = subprocess.run(cmd_rec, capture_output=True, text=True, timeout=20)
+            # Shazam round-trip, not local work: 20s was tight enough to
+            # time out on a slow response and look like a failed match.
+            out = subprocess.run(cmd_rec, capture_output=True, text=True, timeout=60)
             data = json.loads(out.stdout.strip())
             track = data["track"]
             offset = robust_offset(data.get("matches", []))

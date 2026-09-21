@@ -189,7 +189,7 @@ def get_stage_state() -> dict[str, Any]:
                         from . import track_analysis
                         track_analysis.ensure_schema(conn)
                         row = conn.execute(
-                            "SELECT bpm, detected_key, energy FROM track_analysis WHERE track_id = ?",
+                            "SELECT bpm, detected_key, energy FROM track_analysis WHERE track_id = %s",
                             (track_id,),
                         ).fetchone()
                         if row:

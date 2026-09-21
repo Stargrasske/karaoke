@@ -281,38 +281,59 @@ def fetch_lrclib(
     base = settings.lrclib_base.rstrip("/")
 
     titles = [title]
-    cleaned = clean_title(title)
-    if cleaned and cleaned != title:
-        titles.append(cleaned)
+    cleaned_t = clean_title(title)
+    if cleaned_t and cleaned_t != title:
+        titles.append(cleaned_t)
+        
+    page_cleaned = clean_page_title(title)
+    if page_cleaned and page_cleaned not in titles:
+        titles.append(page_cleaned)
 
-    for t in titles:
-        params: dict[str, str] = {"artist_name": artist, "track_name": t}
-        if album:
-            params["album_name"] = album
-        if duration:
-            params["duration"] = str(int(round(duration)))
+    artists = [artist]
+    cleaned_a = clean_artist(artist)
+    if cleaned_a and cleaned_a != artist:
+        artists.append(cleaned_a)
 
-        try:
-            r = http.get(f"{base}/api/get", params=params, timeout=timeout)
-            if r.status_code == 200:
-                return _to_lyrics(r.json())
-        except requests.RequestException:
-            pass
+    for a in artists:
+        for t in titles:
+            params: dict[str, str] = {"artist_name": a, "track_name": t}
+            if album:
+                params["album_name"] = album
+            if duration:
+                params["duration"] = str(int(round(duration)))
 
-        # Fallback: search and take the best synced hit, else the first hit.
-        try:
-            r = http.get(
-                f"{base}/api/search",
-                params={"artist_name": artist, "track_name": t},
-                timeout=timeout,
-            )
-            if r.status_code == 200:
-                results = r.json() or []
-                if results:
-                    best = next((x for x in results if x.get("syncedLyrics")), results[0])
-                    return _to_lyrics(best)
-        except requests.RequestException:
-            pass
+            plain_fallback = None
+            try:
+                r = http.get(f"{base}/api/get", params=params, timeout=timeout)
+                if r.status_code == 200:
+                    ly = _to_lyrics(r.json())
+                    if ly.has_synced:
+                        return ly
+                    plain_fallback = ly
+            except requests.RequestException:
+                pass
+
+            # Fallback: search and take the best synced hit, else the first hit.
+            try:
+                r = http.get(
+                    f"{base}/api/search",
+                    params={"artist_name": a, "track_name": t},
+                    timeout=timeout,
+                )
+                if r.status_code == 200:
+                    results = r.json() or []
+                    if results:
+                        best = next((x for x in results if x.get("syncedLyrics")), results[0])
+                        ly = _to_lyrics(best)
+                        if ly.has_synced:
+                            return ly
+                        if plain_fallback is None:
+                            plain_fallback = ly
+            except requests.RequestException:
+                pass
+                
+            if plain_fallback is not None:
+                return plain_fallback
 
     return Lyrics()
 

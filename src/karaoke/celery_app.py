@@ -49,9 +49,14 @@ def result_backend_url() -> str | None:
     return f"db+sqlite:///{path}"
 
 
+from kombu import Queue
+
 app = Celery("karaoke", broker=broker_url(), backend=result_backend_url())
 app.conf.update(
     task_default_queue=POSTPROCESS_QUEUE,
+    task_queues=(
+        Queue(POSTPROCESS_QUEUE, queue_arguments={'x-max-priority': 10}),
+    ),
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_track_started=True,

@@ -1360,7 +1360,7 @@ def align_plain_text_for_track(track_identifier: str, lyrics_or_file_path: str) 
                 track_id = localcache.find_track_id(a, t, conn)
             if track_id is None:
                 row = conn.execute(
-                    "SELECT track_id FROM tracks WHERE artist LIKE ? OR title LIKE ? LIMIT 1",
+                    "SELECT track_id FROM tracks WHERE artist ILIKE %s OR title ILIKE %s LIMIT 1",
                     (f"%{ident}%", f"%{ident}%")
                 ).fetchone()
                 if row:
@@ -1369,7 +1369,7 @@ def align_plain_text_for_track(track_identifier: str, lyrics_or_file_path: str) 
         if not track_id:
             raise ValueError(f"Could not find track matching '{track_identifier}'")
 
-        track_row = conn.execute("SELECT artist, title FROM tracks WHERE track_id = ?", (track_id,)).fetchone()
+        track_row = conn.execute("SELECT artist, title FROM tracks WHERE track_id = %s", (track_id,)).fetchone()
         artist, title = track_row["artist"], track_row["title"]
 
         localcache.add_track_and_lyrics(
@@ -1377,7 +1377,7 @@ def align_plain_text_for_track(track_identifier: str, lyrics_or_file_path: str) 
         )
 
         source_row = conn.execute(
-            "SELECT url, kind FROM sources WHERE track_id = ? ORDER BY source_id LIMIT 1",
+            "SELECT url, kind FROM sources WHERE track_id = %s ORDER BY source_id LIMIT 1",
             (track_id,)
         ).fetchone()
 
