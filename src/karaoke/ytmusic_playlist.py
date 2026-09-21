@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import argparse
 import re
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,14 +66,14 @@ class PlaylistResult:
     completed: bool = True
 
 
-def karaoke_tracks(conn: sqlite3.Connection) -> list[Candidate]:
+def karaoke_tracks(conn: Connection) -> list[Candidate]:
     """Return tracks that have approved synced lyrics, with any stored YouTube video ID."""
     rows = conn.execute(
         """
         SELECT t.artist, t.title,
                (SELECT s.url FROM sources s
                  WHERE s.track_id = t.track_id AND s.kind IN ('youtube', 'youtube_music', 'http')
-                   AND s.url LIKE '%youtu%'
+                   AND s.url LIKE '%%youtu%%'
                  ORDER BY CASE s.kind WHEN 'youtube_music' THEN 1 WHEN 'youtube' THEN 2 ELSE 3 END
                  LIMIT 1) AS yt_url
           FROM tracks t
@@ -81,8 +82,7 @@ def karaoke_tracks(conn: sqlite3.Connection) -> list[Candidate]:
            AND length(COALESCE(l.synced_lyrics, '')) > 0
            AND length(TRIM(COALESCE(t.artist, ''))) > 0
            AND length(TRIM(COALESCE(t.title, ''))) > 0
-         GROUP BY t.track_id
-         ORDER BY t.artist COLLATE NOCASE, t.title COLLATE NOCASE
+                  ORDER BY lower(t.artist), lower(t.title)
         """
     ).fetchall()
 
@@ -105,6 +105,22 @@ def resolve_candidate(c: Candidate, client: YTMusicClient) -> Candidate:
     else:
         c.resolved_by = "unresolved"
     return c
+
+
+def get_ytmusic_client() -> Optional[YTMusicClient]:
+    """A YouTube Music client, or None when one cannot be built.
+
+    Callers here are all sync paths that must degrade rather than fail: the
+    DJ booth, the follow-playlist action and the TUI playlist views stay
+    useful against local state when YouTube Music is unreachable or the
+    stored credentials have expired. Constructing YTMusicClient directly
+    raises in both cases, which is what crashed /follow-dj.
+    """
+    try:
+        return YTMusicClient()
+    except Exception as exc:
+        log.warning("YouTube Music client unavailable: %s", exc)
+        return None
 
 
 def build_or_sync_ytmusic_playlist(
@@ -238,7 +254,7 @@ def create_temp_queue_playlist(
     client: Optional[YTMusicClient] = None,
     search_query: str = "",
     max_tracks: int = 50,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> PlaylistResult:
     """Create or overwrite today's private YouTube Music temp queue.
 
@@ -354,7 +370,7 @@ def create_temp_queue_playlist(
 
 def get_latest_temp_queue_playlist(
     client: Optional[YTMusicClient] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> Optional[dict[str, Any]]:
     """Fetch the newest temp queue playlist from YouTube Music and map its tracks.
 
@@ -429,7 +445,7 @@ def get_latest_temp_queue_playlist(
                 JOIN tracks t ON t.track_id = s.track_id
                 LEFT JOIN track_analysis a ON a.track_id = t.track_id
                 LEFT JOIN track_genre g ON g.track_id = t.track_id
-                WHERE s.url LIKE ?
+                WHERE s.url LIKE %s
                 LIMIT 1
                 """,
                 (f"%{vid}%",),
@@ -476,7 +492,7 @@ def export_synced_tracks_to_ytmusic(
     limit: Optional[int] = None,
     dry_run: bool = False,
     client: Optional[YTMusicClient] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> PlaylistResult:
     """Export all karaoke-ready tracks in SQLite to a YouTube Music playlist."""
     own_conn = conn is None
@@ -524,11 +540,107 @@ def add_track_to_ytmusic_playlist(
         return False, str(exc)
 
 
+def clear_ytmusic_playlist(
+    playlist_id: str,
+    client: Optional[YTMusicClient] = None,
+) -> bool:
+    """Remove all items from a remote YouTube Music playlist."""
+    if not playlist_id:
+        return False
+    yt = client or YTMusicClient()
+    try:
+        yt.require_auth()
+        raw = yt.get_playlist(playlist_id, limit=500)
+        existing = [
+            track for track in (raw.get("tracks") or [])
+            if track.get("videoId") and track.get("setVideoId")
+        ]
+        if existing:
+            yt.remove_playlist_items(playlist_id, existing)
+        return True
+    except Exception as exc:
+        log.warning("Failed to clear remote YouTube Music playlist %s: %s", playlist_id, exc)
+        return False
+
+
+def resolve_or_create_dj_playlist(
+    name: str = "Karaoke: DJ List",
+    client: Optional[YTMusicClient] = None,
+    conn: Optional[Connection] = None,
+) -> tuple[str, str]:
+    """Find or create the Karaoke DJ playlist in YouTube Music.
+
+    Returns:
+        (playlist_id, playlist_url)
+    """
+    # 1. Check localcache first
+    own_conn = conn is None
+    c = conn or localcache.connect()
+    try:
+        pl = localcache.find_saved_playlist_by_id("dj-list", conn=c)
+        if pl and pl.get("url") and "list=PL" in pl["url"]:
+            pid = pl["url"].split("list=")[-1].split("&")[0]
+            return pid, pl["url"]
+
+        cur = c.cursor()
+        cur.execute(
+            "SELECT playlist_id, url FROM saved_playlists WHERE (name ILIKE %s OR playlist_id = 'dj-list') AND url LIKE '%%list=PL%%' LIMIT 1",
+            (f"%{name}%",),
+        )
+        row = cur.fetchone()
+        if row and row["url"]:
+            pid = row["playlist_id"] if str(row["playlist_id"]).startswith("PL") else row["url"].split("list=")[-1].split("&")[0]
+            return pid, row["url"]
+    finally:
+        if own_conn:
+            c.close()
+
+    # 2. Check YouTube Music library
+    yt = client or YTMusicClient()
+    try:
+        yt.require_auth()
+        playlists = yt.get_library_playlists(limit=500)
+        target_id = None
+        for p in playlists:
+            title = str(p.get("title") or "").strip().lower()
+            if title in (name.lower(), "karaoke: dj list", "karaoke dj list", "dj-list"):
+                target_id = str(p.get("playlistId") or "")
+                break
+
+        if not target_id:
+            target_id = yt.create_playlist(
+                title=name,
+                description="AI Karaoke DJ setlist and smart recommendations.",
+                privacy_status="PRIVATE",
+                video_ids=[],
+            )
+
+        url = f"https://music.youtube.com/playlist?list={target_id}"
+
+        # Persist locally under target_id and remove duplicate legacy 'dj-list' row
+        with (conn or localcache.connect()) as c2:
+            localcache.save_playlist(
+                target_id,
+                name,
+                search_query="",
+                tracks=None,
+                url=url,
+                source_kind="dj",
+                conn=c2,
+            )
+            c2.execute("DELETE FROM saved_playlists WHERE playlist_id = 'dj-list'")
+            c2.execute("DELETE FROM saved_playlist_tracks WHERE playlist_id = 'dj-list'")
+        return target_id, url
+    except Exception as exc:
+        log.warning("Could not reach YouTube Music API, falling back to local dj-list: %s", exc)
+        return "dj-list", ""
+
+
 def reconcile_playlist_with_remote(
     playlist_id: str,
     local_rows: list[dict[str, Any]],
     client: Optional[YTMusicClient] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Compare local queue rows with remote YouTube Music playlist tracks and reconcile drift.
 
@@ -536,8 +648,10 @@ def reconcile_playlist_with_remote(
     """
     if not playlist_id:
         return local_rows, False
-    yt = client or YTMusicClient()
-    if not yt.is_authenticated:
+    # `client or YTMusicClient()` would construct one here and raise on the
+    # very failures the caller already handled by passing None.
+    yt = client if client is not None else get_ytmusic_client()
+    if yt is None or not yt.is_authenticated:
         return local_rows, False
 
     try:
@@ -577,8 +691,12 @@ def reconcile_playlist_with_remote(
             if not vid:
                 continue
             title = str(t.get("title") or "").strip()
-            artists = t.get("artists") or []
-            artist = str(artists[0].get("name") if artists and isinstance(artists[0], dict) else "").strip()
+            artist = str(t.get("artist") or "").strip()
+            if not artist and t.get("artists"):
+                artists = t["artists"]
+                if isinstance(artists, list) and artists:
+                    first = artists[0]
+                    artist = str(first.get("name") if isinstance(first, dict) else first).strip()
 
             found = c.execute(
                 """
@@ -588,11 +706,27 @@ def reconcile_playlist_with_remote(
                 JOIN tracks t ON t.track_id = s.track_id
                 LEFT JOIN track_analysis a ON a.track_id = t.track_id
                 LEFT JOIN track_genre g ON g.track_id = t.track_id
-                WHERE s.url LIKE ?
+                WHERE s.url LIKE %s
                 LIMIT 1
                 """,
                 (f"%{vid}%",),
             ).fetchone()
+
+            if not found and artist and title:
+                tid = localcache.find_track_id_relaxed(artist, title, c)
+                if tid:
+                    found = c.execute(
+                        """
+                        SELECT t.track_id, t.artist, t.title,
+                               g.genre, a.energy, a.bpm, a.detected_key AS key
+                        FROM tracks t
+                        LEFT JOIN track_analysis a ON a.track_id = t.track_id
+                        LEFT JOIN track_genre g ON g.track_id = t.track_id
+                        WHERE t.track_id = %s
+                        LIMIT 1
+                        """,
+                        (tid,),
+                    ).fetchone()
 
             if found:
                 reconciled_rows.append({
@@ -600,12 +734,12 @@ def reconcile_playlist_with_remote(
                     "artist": found["artist"] or artist,
                     "title": found["title"] or title,
                     "video_id": vid,
-                    "url": found["url"] or f"https://music.youtube.com/watch?v={vid}",
-                    "kind": found["kind"] or "youtube_music",
-                    "genre": found["genre"],
-                    "energy": found["energy"],
-                    "bpm": found["bpm"],
-                    "key": found["key"],
+                    "url": found.get("url") or f"https://music.youtube.com/watch?v={vid}",
+                    "kind": found.get("kind") or "youtube_music",
+                    "genre": found.get("genre"),
+                    "energy": found.get("energy"),
+                    "bpm": found.get("bpm"),
+                    "key": found.get("key"),
                 })
             else:
                 reconciled_rows.append({
@@ -646,7 +780,7 @@ def reconcile_playlist_with_remote(
 def import_ytmusic_playlist_to_library(
     playlist_id: str,
     *,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
     resolve_lyrics: bool = True,
     client: Optional[YTMusicClient] = None,
 ) -> dict[str, Any]:

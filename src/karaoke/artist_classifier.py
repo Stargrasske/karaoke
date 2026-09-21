@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 import urllib.parse
 import urllib.request
@@ -676,7 +677,7 @@ def fetch_wikidata_genres(artist: str, timeout: float = 4.0) -> list[str]:
 
 def classify_artist(
     artist: str,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
     *,
     online: bool = True,
 ) -> tuple[list[str], list[str]]:
@@ -701,7 +702,7 @@ def classify_artist(
             cur = conn.execute(
                 """
                 SELECT genre, broad_genre FROM artist_genres
-                WHERE artist_normalized = ?
+                WHERE artist_normalized = %s
                 ORDER BY weight DESC
                 """,
                 (norm,),
@@ -737,7 +738,7 @@ def classify_artist(
 
     # Also check if collaborative/ensemble prefix is in seed
     # (e.g. "Django Reinhardt & le quintette du Hot club de France" -> "Django Reinhardt")
-    prefix = re.split(r"(?:,\s*|/\s*|\s+(?:&|and|with|feat\.?|ft\.?|et ses|et son|and his|& his|and her|& her|presents?)\s+)", norm)[0].strip()
+    prefix = re.split(r"(%s:,\s*|/\s*|\s+(%s:&|and|with|feat\.%s|ft\.%s|et ses|et son|and his|& his|and her|& her|presents%s)\s+)", norm)[0].strip()
     if prefix != norm and prefix in CURATED_SEED_ARTISTS:
         seed_spec, seed_broad = CURATED_SEED_ARTISTS[prefix]
         if conn is not None:
@@ -782,7 +783,7 @@ def _save_to_db(
     specific_genres: list[str],
     broad_genres: list[str],
     source: str,
-    conn: sqlite3.Connection,
+    conn: Connection,
 ) -> None:
     """Save resolved artist genres into SQLite table."""
     now = time.time()
@@ -794,7 +795,7 @@ def _save_to_db(
                     """
                     INSERT INTO artist_genres (
                         artist_normalized, genre, broad_genre, weight, source, fetched_at
-                    ) VALUES (?, ?, ?, 1.0, ?, ?)
+                    ) VALUES (%s, %s, %s, 1.0, %s, %s)
                     ON CONFLICT(artist_normalized, genre, broad_genre) DO UPDATE SET
                         source = excluded.source,
                         fetched_at = excluded.fetched_at
@@ -809,7 +810,7 @@ def _save_to_db(
         pass
 
 
-def seed_database(conn: sqlite3.Connection) -> int:
+def seed_database(conn: Connection) -> int:
     """Pre-populate the SQLite artist_genres table with all curated seed artists.
 
     Returns the number of artist entries populated.
@@ -822,10 +823,10 @@ def seed_database(conn: sqlite3.Connection) -> int:
             for bg in bg_list:
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO artist_genres (
+                    INSERT INTO artist_genres (
                         artist_normalized, genre, broad_genre, weight, source, fetched_at
-                    ) VALUES (?, ?, ?, 1.0, 'seed', ?)
-                    """,
+                    ) VALUES (%s, %s, %s, 1.0, 'seed', %s)
+                    ON CONFLICT DO NOTHING""",
                     (norm_artist, spec, bg, now),
                 )
         count += 1

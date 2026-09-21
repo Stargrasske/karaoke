@@ -38,14 +38,14 @@ def run(
     else:
         statuses = ("pending",)
     with localcache.connect() as conn:
-        placeholders = ",".join("?" * len(statuses))
+        placeholders = ",".join(["%s"] * len(statuses))
         sql = (
             f"SELECT gap_id, artist, title FROM lyric_gaps "
             f"WHERE status IN ({placeholders}) ORDER BY attempts ASC, gap_id ASC"
         )
         params: list = list(statuses)
         if limit is not None:
-            sql += " LIMIT ?"
+            sql += " LIMIT %s"
             params.append(limit)
         gaps = conn.execute(sql, params).fetchall()
 
@@ -249,8 +249,8 @@ def _update_gap_status(gap_id: int, status: str, *, error: Optional[str] = None)
         conn.execute(
             """
             UPDATE lyric_gaps
-            SET status = ?, processed_at = ?, attempts = attempts + 1, last_error = ?
-            WHERE gap_id = ?
+            SET status = %s, processed_at = %s, attempts = attempts + 1, last_error = %s
+            WHERE gap_id = %s
             """,
             (status, time.time(), error, gap_id),
         )

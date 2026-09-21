@@ -15,7 +15,8 @@ Run:  ``karaoke-find-sources --dry-run``   to see what it would store
 from __future__ import annotations
 
 import argparse
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -56,7 +57,7 @@ class Candidate:
     lyric_end: Optional[float]      # last synced lyric timestamp, a floor
 
 
-def needs_source(conn: sqlite3.Connection,
+def needs_source(conn: Connection,
                  limit: Optional[int] = None) -> list[Candidate]:
     """Tracks that have lyrics but no playable YouTube URL."""
     sql = """
@@ -67,11 +68,11 @@ def needs_source(conn: sqlite3.Connection,
         FROM tracks t
         WHERE NOT EXISTS (
                 -- Both YouTube URL forms count as sourced. Matching only
-                -- "watch?v=" would re-search a track already stored as a
+                -- "watch%sv=" would re-search a track already stored as a
                 -- youtu.be short link, every run, forever.
                 SELECT 1 FROM sources s
                  WHERE s.track_id = t.track_id
-                   AND (s.url LIKE '%watch?v=%' OR s.url LIKE '%youtu.be/%'))
+                   AND (s.url LIKE '%%watch%%v=%%' OR s.url LIKE '%%youtu.be/%%'))
           AND EXISTS (
                 SELECT 1 FROM lyrics l
                  WHERE l.track_id = t.track_id AND l.kind = 'approved'
@@ -132,7 +133,7 @@ def find_for(cand: Candidate) -> Optional[dict]:
 
 def run(*, limit: Optional[int] = None, dry_run: bool = False,
         pause: float = REQUEST_PAUSE_S,
-        conn: Optional[sqlite3.Connection] = None) -> tuple[int, int]:
+        conn: Optional[Connection] = None) -> tuple[int, int]:
     """Find and store sources. Returns (found, missed)."""
     own = conn is None
     c = conn or localcache.connect()
@@ -185,7 +186,7 @@ def find_sources_main(argv: Optional[list[str]] = None) -> int:
     return 0
 
 
-def resolve_and_save_source(track_id: int, conn: sqlite3.Connection) -> Optional[str]:
+def resolve_and_save_source(track_id: int, conn: Connection) -> Optional[str]:
     """Find and save a YouTube source for a specific track by its track_id."""
     row = conn.execute(
         """
@@ -194,7 +195,7 @@ def resolve_and_save_source(track_id: int, conn: sqlite3.Connection) -> Optional
                  WHERE l.track_id = t.track_id AND l.kind = 'approved'
                  LIMIT 1) AS synced
         FROM tracks t
-        WHERE t.track_id = ?
+        WHERE t.track_id = %s
         """,
         (track_id,),
     ).fetchone()

@@ -1,4 +1,4 @@
-# Container image for the karaoke library API (read-only SQLite backend).
+# Container image for the karaoke library API (read-only Postgres backend).
 # Deliberately excludes desktop tooling: playback lives in the host-side
 # control API (karaoke.ctrl_api), not in this image.
 FROM python:3.12-slim AS base
@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir \
         "fastapi>=0.110.0" \
         "uvicorn[standard]>=0.28.0" \
         "requests>=2.32" \
-        "rich>=13.7"
+        "rich>=13.7" \
+        "psycopg[binary,pool]>=3.0.0"
 
 COPY src/karaoke /app/karaoke
 

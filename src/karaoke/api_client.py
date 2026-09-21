@@ -446,8 +446,9 @@ class ApiClient:
             return record_status()
         return {"recording": [], "count": 0}
 
-    def record_analyse(self, recording_id: int, keep: bool = False) -> dict[str, Any]:
-        res = self._http_post(self.ctrl_url, f"/api/recordings/{recording_id}/analyse?keep={'true' if keep else 'false'}")
+    def record_analyse(self, recording_id: int, keep: bool = True,
+                       prune_after: bool = False) -> dict[str, Any]:
+        res = self._http_post(self.ctrl_url, f"/api/recordings/{recording_id}/analyse?prune_after={'true' if prune_after else 'false'}")
         if res is not None:
             return res
         if self.fallback_local:
@@ -455,7 +456,7 @@ class ApiClient:
             # (the HTTP endpoint runs this in the background instead).
             from . import recording_worker
             try:
-                lines = recording_worker.analyse(recording_id, keep=True if keep else None)
+                lines = recording_worker.analyse(recording_id, prune_after=prune_after)
                 return {"status": "analysed", "recording_id": recording_id, "lines": lines}
             except Exception as e:
                 return {"status": "error", "detail": str(e)}

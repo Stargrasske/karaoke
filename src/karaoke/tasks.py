@@ -158,7 +158,7 @@ def resolve_track_id(self, payload: dict[str, Any]) -> dict[str, Any]:
             local_file_path = Path(url)
         else:
             local_row = conn.execute(
-                "SELECT url FROM sources WHERE track_id = ? AND kind = 'local' LIMIT 1",
+                "SELECT url FROM sources WHERE track_id = %s AND kind = 'local' LIMIT 1",
                 (track_id,),
             ).fetchone()
             if local_row and local_row[0] and Path(local_row[0]).is_file():
@@ -177,7 +177,7 @@ def resolve_track_id(self, payload: dict[str, Any]) -> dict[str, Any]:
                 row = conn.execute(
                     """
                     SELECT url FROM sources
-                    WHERE track_id = ? AND kind IN ('youtube', 'youtube_music')
+                    WHERE track_id = %s AND kind IN ('youtube', 'youtube_music')
                     ORDER BY CASE WHEN kind = 'youtube_music' THEN 0 ELSE 1 END
                     LIMIT 1
                     """,

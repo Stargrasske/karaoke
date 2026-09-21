@@ -17,7 +17,8 @@ only create a way for it to disagree with the lyrics it came from.
 from __future__ import annotations
 
 import math
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 from dataclasses import dataclass
 from typing import Optional
 
@@ -107,7 +108,7 @@ def tempo_affinity(a: Optional[float], b: Optional[float]) -> Optional[float]:
     return max(0.0, 1.0 - abs(a - b) / TEMPO_SPAN)
 
 
-def load_candidates(conn: sqlite3.Connection, *,
+def load_candidates(conn: Connection, *,
                     min_hits: int = MIN_HITS) -> list[Candidate]:
     """Every track with enough lyric signal to match on."""
     # track_analysis is created on demand, not by connect(), so a database that
@@ -127,8 +128,8 @@ def load_candidates(conn: sqlite3.Connection, *,
         WHERE length(COALESCE(l.plain_lyrics, l.synced_lyrics, '')) > 40
           -- A whole album is not a playlist entry, and its sentiment is the
           -- average of a dozen different songs.
-          AND (t.duration IS NULL OR t.duration <= :album_seconds)
-        """, {"album_seconds": ALBUM_UPLOAD_SECONDS}
+          AND (t.duration IS NULL OR t.duration <= %s)
+        """, (ALBUM_UPLOAD_SECONDS,)
     ).fetchall()
 
     out: list[Candidate] = []
@@ -224,13 +225,13 @@ def playlist_lines(matches: list[Match]) -> list[str]:
     return out
 
 
-def urls_for(matches: list[Match], conn: sqlite3.Connection) -> list[tuple[str, str]]:
+def urls_for(matches: list[Match], conn: Connection) -> list[tuple[str, str]]:
     """(label, url) for each match that has somewhere to play from."""
     out = []
     for match in matches:
         row = conn.execute(
-            "SELECT url FROM sources WHERE track_id = ?"
-            " ORDER BY CASE WHEN url LIKE '%youtu%' THEN 0 ELSE 1 END, source_id"
+            "SELECT url FROM sources WHERE track_id = %s"
+            " ORDER BY CASE WHEN url LIKE '%%youtu%%' THEN 0 ELSE 1 END, source_id"
             " LIMIT 1", (match.candidate.track_id,)).fetchone()
         if row and row["url"]:
             out.append((match.candidate.label, row["url"]))

@@ -1,5 +1,6 @@
 """Tests for upgrading cached line-level lyrics to Enhanced LRC."""
 from __future__ import annotations
+import psycopg.rows
 
 import json
 import sqlite3
@@ -31,10 +32,17 @@ JSON3 = json.dumps({"events": [
 ]})
 
 
+@pytest.fixture(autouse=True)
+def reset_cooldown():
+    upgrade_timings._COOLDOWN_UNTIL = 0.0
+    yield
+    upgrade_timings._COOLDOWN_UNTIL = 0.0
+
+
 @pytest.fixture()
 def conn(tmp_path):
     c = _real_connect(tmp_path / "k.db")
-    c.row_factory = sqlite3.Row
+    c.row_factory = psycopg.rows.dict_row
     ensure_schema(c)
     lines, _, _ = parse_enhanced_lrc(PLAIN_LRC)
     localcache.add_track_source("A", "S", url="https://youtu.be/x",
@@ -165,3 +173,51 @@ def test_upgrade_all_stops_on_rate_limit(conn, monkeypatch, fake_youtube):
     results = upgrade_timings.upgrade_all(conn=conn, delay=0, progress=False)
     assert len(results) == 1                 # stopped rather than looping
     assert results[0].status == "error"
+
+
+def test_upgrade_rejects_automatic_captions_when_synced_exists(conn, monkeypatch, fake_youtube):
+    """Automatic ASR captions must never overwrite existing approved synced lyrics."""
+    monkeypatch.setattr(
+        upgrade_timings, "probe_captions",
+        lambda info, *a, **k: CaptionAvailability(
+            has_manual=False, has_automatic=True,
+            manual_languages=(), automatic_languages=("en",),
+            best=CaptionTrack(language="en", ext="json3",
+                              url="https://c/en.json3", kind="automatic"),
+        ),
+    )
+    row = upgrade_timings.find_upgrade_candidates(conn)[0]
+    res = upgrade_timings.upgrade_track(row, conn)
+    assert res.status == "no-captions"
+    assert "automatic captions rejected" in res.detail
+
+    # Existing lyrics intact
+    cached = localcache.get_cached_lyrics("A", "S", conn=conn)
+    assert cached.synced_raw == PLAIN_LRC
+
+
+def test_upgrade_rejects_truncated_captions(conn, monkeypatch, fake_youtube):
+    """Captions with far fewer lines than existing synced lyrics must be rejected."""
+    # Put 10 lines of existing synced lyrics
+    ten_lines = "\n".join(f"[00:{i:02d}.00] line {i}" for i in range(10))
+    localcache.put_cached_lyrics("A", "S", Lyrics(plain="p", synced_raw=ten_lines), conn=conn)
+
+    # Caption response has only 1 line (e.g. AWOLNATION - Sail 1-line bug)
+    one_line_json3 = json.dumps({"events": [
+        {"tStartMs": 10_000, "segs": [{"utf8": "you", "tOffsetMs": 0}]},
+    ]})
+    class Resp:
+        headers = {"Content-Type": "application/json"}
+        text = one_line_json3
+        def raise_for_status(self): return None
+
+    monkeypatch.setattr(upgrade_timings.requests, "get", lambda *a, **k: Resp())
+
+    row = upgrade_timings.find_upgrade_candidates(conn)[0]
+    res = upgrade_timings.upgrade_track(row, conn)
+    assert res.status == "no-captions"
+    assert "incomplete" in res.detail
+
+    # Existing 10 lines preserved
+    cached = localcache.get_cached_lyrics("A", "S", conn=conn)
+    assert cached.synced_raw == ten_lines

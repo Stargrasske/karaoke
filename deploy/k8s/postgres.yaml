@@ -1,0 +1,118 @@
+# Postgres for the in-cluster library API.
+#
+# The API stopped reading a SQLite file on the data volume and now talks to
+# Postgres over KARAOKE_PG_URL, so the cluster has to provide a server. This is
+# the cluster's own database, not the host one the desktop tooling uses.
+#
+# The schema is not created here. It lives in POSTGRES_DDL in
+# scripts/migrate_sqlite_to_postgres.py -- the single authority, also parsed by
+# tests/conftest.py -- and is handed to the entrypoint as a ConfigMap named
+# karaoke-schema, mounted below. The mount is optional so that a plain
+# `kubectl apply -k deploy/k8s` still starts: without the ConfigMap you get an
+# empty database rather than a pod that will not schedule. Generate it with:
+#
+#   python -c "import sys; sys.path.insert(0, 'scripts'); \
+#       from migrate_sqlite_to_postgres import POSTGRES_DDL; print(POSTGRES_DDL)" > schema.sql
+#   kubectl -n karaoke create configmap karaoke-schema --from-file=schema.sql
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: karaoke-postgres-data
+  namespace: karaoke
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: karaoke
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # kind ships the local-path provisioner as the default StorageClass.
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: karaoke
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: karaoke
+spec:
+  replicas: 1
+  # ReadWriteOnce volume: never let a rolling update bind it twice.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: karaoke
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: karaoke
+            - name: POSTGRES_PASSWORD
+              value: karaoke
+            - name: POSTGRES_DB
+              value: karaoke
+            # The image refuses to initialise into a non-empty directory, and
+            # a PVC root carries lost+found on some provisioners.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: schema
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "karaoke", "-d", "karaoke"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "karaoke", "-d", "karaoke"]
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: karaoke-postgres-data
+        - name: schema
+          configMap:
+            name: karaoke-schema
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: karaoke
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: karaoke
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  selector:
+    app.kubernetes.io/name: postgres

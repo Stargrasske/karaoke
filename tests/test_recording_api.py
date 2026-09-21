@@ -17,7 +17,7 @@ def db(tmp_path, monkeypatch):
     real = localcache.connect
     monkeypatch.setattr(localcache, "connect", lambda *a, **k: real(path))
     c = real(path)
-    c.executescript("""
+    c.execute("""
         INSERT INTO recordings (recording_id, started_at, ended_at, source, dir,
                                 status, keep_audio)
         VALUES (1, 1000.0, 2000.0, 'x.monitor', '/tmp/nope', 'complete', 0);
@@ -162,7 +162,7 @@ def test_sample_returns_the_analysis(ctrl, monkeypatch):
 def test_listing_filters_and_options(api, db):
     # Add extra recordings for filter testing
     c = localcache.connect(db)
-    c.executescript("""
+    c.execute("""
         INSERT INTO recordings (recording_id, started_at, ended_at, source, dir, status, keep_audio, note)
         VALUES (2, 3000.0, 4000.0, 'alsa_output.pci', '/tmp/rec2', 'discarded', 1, 'Late night session');
         INSERT INTO recordings (recording_id, started_at, ended_at, source, dir, status, keep_audio, note)

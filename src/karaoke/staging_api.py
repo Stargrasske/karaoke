@@ -1,5 +1,6 @@
 import os
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 from typing import Any, Optional
 from pydantic import BaseModel

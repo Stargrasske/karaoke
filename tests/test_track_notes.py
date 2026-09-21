@@ -38,7 +38,7 @@ LYRICS = "\n".join([
 @pytest.fixture()
 def conn(tmp_path):
     c = localcache.connect(tmp_path / "notes.db")
-    c.execute("INSERT INTO tracks (artist, title) VALUES (?, ?)",
+    c.execute("INSERT INTO tracks (artist, title) VALUES (%s, %s)",
               ("Wizards of Ooze", "Bambee!"))
     c.commit()
     yield c
@@ -121,7 +121,12 @@ def test_empty_text_is_not_stored(conn):
 
 
 def test_the_table_is_added_to_a_database_predating_it(tmp_path):
+    if getattr(localcache, "_IS_PG", False):
+        import pytest
+        pytest.skip("Test specifically for SQLite schema migration")
     """Existing DBs must gain the table without a rebuild."""
+    import sqlite3
+
     path = tmp_path / "old.db"
     old = sqlite3.connect(str(path))
     old.execute("CREATE TABLE tracks (track_id INTEGER PRIMARY KEY, "

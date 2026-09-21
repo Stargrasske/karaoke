@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "karaoke"
-version = "0.8.0"
+version = "0.9.1"
 description = "Local karaoke + lyric semantic search over OpenSearch (kind cluster), LRCLIB synced lyrics."
 requires-python = ">=3.11"
 dependencies = [
@@ -27,6 +27,7 @@ dependencies = [
     "ytmusicapi>=1.12.0",
     "secretstorage>=3.3",
     "jeepney>=0.8",
+    "psycopg[binary,pool]>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -56,6 +57,7 @@ karaoke-tui = "karaoke.cli:tui_main"
 karaoke-analyze = "karaoke.cli:analyze_main"
 karaoke-upgrade-timings = "karaoke.upgrade_timings:upgrade_main"
 karaoke-postprocess-worker = "karaoke.postprocess_worker:main"
+karaoke-relay = "karaoke.relay:main"
 karaoke-spotify-playlist = "karaoke.spotify_playlist:playlist_main"
 karaoke-find-sources = "karaoke.find_sources:find_sources_main"
 karaoke-sample = "karaoke.sample_audio:sample_main"
@@ -66,6 +68,8 @@ karaoke-align-review = "karaoke.lyric_align:review_main"
 karaoke-similar = "karaoke.search:similar_main"
 karaoke-sounds-like = "karaoke.search:describe_main"
 karaoke-ytmusic-playlist = "karaoke.ytmusic_playlist:ytmusic_playlist_main"
+karaoke-mcp = "karaoke.mcp_server:main"
+karaoke-dj = "karaoke.dj_chat:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

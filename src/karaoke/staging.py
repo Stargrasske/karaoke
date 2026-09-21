@@ -7,7 +7,8 @@ be approved into the normal local lyrics cache.
 """
 from __future__ import annotations
 
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -17,7 +18,7 @@ from . import localcache
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS staged_lyrics (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            SERIAL PRIMARY KEY,
     key           TEXT NOT NULL,
     artist        TEXT NOT NULL,
     title         TEXT NOT NULL,
@@ -62,7 +63,7 @@ class StagedLyrics:
         return bool(parse_lrc(self.synced_lyrics))
 
 
-def _row_to_item(row: sqlite3.Row) -> StagedLyrics:
+def _row_to_item(row: dict) -> StagedLyrics:
     return StagedLyrics(
         id=int(row["id"]),
         artist=row["artist"] or "",
@@ -81,7 +82,7 @@ def _row_to_item(row: sqlite3.Row) -> StagedLyrics:
     )
 
 
-def ensure_schema(conn: sqlite3.Connection) -> None:
+def ensure_schema(conn: Connection) -> None:
     """Create staged-lyrics tables in the existing local cache DB.
 
     Also enforces one row per (track, source): staging used to be a bare
@@ -90,7 +91,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     into the newest row before the unique index is added, since the index cannot
     be created while they are present.
     """
-    conn.executescript(_SCHEMA)
+    conn.execute(_SCHEMA)
     conn.execute(
         """
         DELETE FROM staged_lyrics
@@ -117,7 +118,7 @@ def stage_lyrics(
     source_url: str = "",
     confidence: float = 0.0,
     notes: str = "",
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> int:
     """Stage a lower-trust lyrics candidate and return its staging id.
 
@@ -141,7 +142,7 @@ def stage_lyrics(
                 (key, artist, title, album, duration, source_kind, source_url,
                  confidence, status, plain_lyrics, synced_lyrics, notes,
                  created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s)
             ON CONFLICT(key, source_kind) DO UPDATE SET
                 artist        = excluded.artist,
                 title         = excluded.title,
@@ -162,12 +163,12 @@ def stage_lyrics(
         )
         c.commit()
         row = c.execute(
-            "SELECT id FROM staged_lyrics WHERE key = ? AND source_kind = ?",
+            "SELECT id FROM staged_lyrics WHERE key = %s AND source_kind = %s",
             (localcache._key(artist, title), source_kind),
         ).fetchone()
         if row is None:
             raise RuntimeError("staged lyrics upsert did not yield an id")
-        return int(row[0])
+        return int(row["id"])
     finally:
         if own:
             c.close()
@@ -177,7 +178,7 @@ def list_staged(
     *,
     status: str = "pending",
     limit: int = 20,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> list[StagedLyrics]:
     """List staged lyric candidates newest-first."""
     own = conn is None
@@ -187,9 +188,9 @@ def list_staged(
         rows = c.execute(
             """
             SELECT * FROM staged_lyrics
-            WHERE (? = 'all' OR status = ?)
+            WHERE (%s = 'all' OR status = %s)
             ORDER BY updated_at DESC, id DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (status, status, limit),
         ).fetchall()
@@ -199,20 +200,20 @@ def list_staged(
             c.close()
 
 
-def get_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) -> Optional[StagedLyrics]:
+def get_staged(item_id: int, *, conn: Optional[Connection] = None) -> Optional[StagedLyrics]:
     """Return one staged lyrics candidate by id."""
     own = conn is None
     c = conn or localcache.connect()
     ensure_schema(c)
     try:
-        row = c.execute("SELECT * FROM staged_lyrics WHERE id = ?", (item_id,)).fetchone()
+        row = c.execute("SELECT * FROM staged_lyrics WHERE id = %s", (item_id,)).fetchone()
         return _row_to_item(row) if row else None
     finally:
         if own:
             c.close()
 
 
-def approve_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) -> StagedLyrics:
+def approve_staged(item_id: int, *, conn: Optional[Connection] = None) -> StagedLyrics:
     """Mark a staged candidate approved and copy it into the local lyrics cache."""
     own = conn is None
     c = conn or localcache.connect()
@@ -232,7 +233,7 @@ def approve_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) -
             album=item.album, duration=item.duration, conn=c,
         )
         c.execute(
-            "UPDATE staged_lyrics SET status = 'approved', updated_at = ? WHERE id = ?",
+            "UPDATE staged_lyrics SET status = 'approved', updated_at = %s WHERE id = %s",
             (time.time(), item_id),
         )
         c.commit()
@@ -244,7 +245,7 @@ def approve_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) -
             c.close()
 
 
-def reject_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) -> StagedLyrics:
+def reject_staged(item_id: int, *, conn: Optional[Connection] = None) -> StagedLyrics:
     """Mark a staged candidate rejected without touching the approved cache."""
     own = conn is None
     c = conn or localcache.connect()
@@ -254,7 +255,7 @@ def reject_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) ->
         if item is None:
             raise KeyError(f"no staged lyrics with id {item_id}")
         c.execute(
-            "UPDATE staged_lyrics SET status = 'rejected', updated_at = ? WHERE id = ?",
+            "UPDATE staged_lyrics SET status = 'rejected', updated_at = %s WHERE id = %s",
             (time.time(), item_id),
         )
         c.commit()
@@ -266,7 +267,7 @@ def reject_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) ->
             c.close()
 
 
-def whitelist_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None) -> StagedLyrics:
+def whitelist_staged(item_id: int, *, conn: Optional[Connection] = None) -> StagedLyrics:
     """Whitelist a staged candidate: approve it into the working lyrics cache.
 
     Alias for :func:`approve_staged` with the domain term the TUI uses — once
@@ -276,7 +277,7 @@ def whitelist_staged(item_id: int, *, conn: Optional[sqlite3.Connection] = None)
 
 
 def find_pending_by_track(
-    artist: str, title: str, *, conn: Optional[sqlite3.Connection] = None
+    artist: str, title: str, *, conn: Optional[Connection] = None
 ) -> Optional[StagedLyrics]:
     """Return the newest non-rejected staged candidate for a track, if any."""
     own = conn is None
@@ -286,7 +287,7 @@ def find_pending_by_track(
         row = c.execute(
             """
             SELECT * FROM staged_lyrics
-            WHERE key = ? AND status != 'rejected'
+            WHERE key = %s AND status != 'rejected'
             ORDER BY updated_at DESC, id DESC
             LIMIT 1
             """,

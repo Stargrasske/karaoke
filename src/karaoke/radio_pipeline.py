@@ -8,7 +8,8 @@ and ingests them into the library.
 from __future__ import annotations
 
 import re
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -32,7 +33,7 @@ def import_radio_session(
     *,
     save_audio: bool = True,
     resolve_streaming: bool = True,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
 ) -> dict[str, Any]:
     """Import all tracks from a radio session into the karaoke library.
 

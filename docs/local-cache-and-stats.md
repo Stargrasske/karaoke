@@ -1,7 +1,16 @@
 # Local cache and stats
 
-Karaoke keeps a small, always-available SQLite database that is independent of the
-OpenSearch/kind cluster. It has two jobs:
+!!! warning "Backend is now PostgreSQL"
+    This page predates the Postgres cutover and still describes the SQLite
+    engine, its WAL tuning and `sqlite3` access patterns. The *roles* described
+    here (offline lyrics cache, play/discovery stats, lookup order) are still
+    accurate; the storage engine is not. The operational database is now
+    PostgreSQL, reached via `KARAOKE_PG_URL` — see
+    [Database backend](database.md). The `karaoke.db` path below is a frozen
+    pre-migration snapshot.
+
+Karaoke keeps a small, always-available operational database that is independent
+of the OpenSearch/kind cluster. It has two jobs:
 
 1. **Offline lyrics cache** — serve a known song's lyrics without the cluster and
    without a fresh online request.
@@ -11,11 +20,11 @@ OpenSearch/kind cluster. It has two jobs:
 Default location: `~/.local/share/karaoke/karaoke.db`
 (override with `KARAOKE_DATA_DIR`).
 
-## Why SQLite is the operational database
+## Why there is a local operational database
 
-SQLite is now the source of truth for normal playback and automation. OpenSearch is optional and derived: useful for semantic/vector search and future training features, but not required for exact lyric lookup or player control.
+The local database is the source of truth for normal playback and automation. OpenSearch is optional and derived: useful for semantic/vector search and future training features, but not required for exact lyric lookup or player control.
 
-Live modes (`--radio`, `--listen`, `--output`, `--spotify`, player/browser modes) should keep working — and keep known songs offline — even with no cluster. The local SQLite database provides that stable base.
+Live modes (`--radio`, `--listen`, `--output`, `--spotify`, player/browser modes) should keep working — and keep known songs offline — even with no cluster. The local database provides that stable base.
 
 ## Lyrics lookup order
 

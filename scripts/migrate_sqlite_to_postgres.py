@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-import psycopg2
-import psycopg2.extras
+import psycopg
 from pathlib import Path
 
 # Postgres DDL
@@ -239,6 +238,116 @@ CREATE INDEX IF NOT EXISTS idx_recording_silence_rec ON recording_silence (recor
 CREATE INDEX IF NOT EXISTS idx_track_art_key ON track_art (art_key);
 CREATE INDEX IF NOT EXISTS idx_track_genre_genre ON track_genre (genre);
 CREATE INDEX IF NOT EXISTS idx_track_tone_tone ON track_tone (tone);
+
+CREATE TABLE IF NOT EXISTS saved_searches (
+    query        TEXT PRIMARY KEY,
+    result_count INTEGER DEFAULT 0,
+    created_at   DOUBLE PRECISION NOT NULL,
+    last_used_at DOUBLE PRECISION NOT NULL,
+    use_count    INTEGER DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_saved_searches_last_used ON saved_searches(last_used_at);
+
+CREATE TABLE IF NOT EXISTS saved_playlists (
+    playlist_id  TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    search_query TEXT DEFAULT '',
+    track_count  INTEGER DEFAULT 0,
+    url          TEXT DEFAULT '',
+    source_kind  TEXT DEFAULT 'youtube_music',
+    created_at   DOUBLE PRECISION NOT NULL,
+    updated_at   DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_saved_playlists_updated ON saved_playlists(updated_at);
+
+CREATE TABLE IF NOT EXISTS saved_playlist_tracks (
+    playlist_id TEXT NOT NULL REFERENCES saved_playlists(playlist_id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL,
+    track_id    INTEGER,
+    artist      TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    video_id    TEXT DEFAULT '',
+    url         TEXT DEFAULT '',
+    PRIMARY KEY (playlist_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_saved_playlist_tracks_pid ON saved_playlist_tracks(playlist_id);
+
+CREATE TABLE IF NOT EXISTS artist_genres (
+    artist_normalized TEXT NOT NULL,
+    genre             TEXT NOT NULL,
+    broad_genre       TEXT NOT NULL,
+    weight            REAL NOT NULL DEFAULT 1.0,
+    source            TEXT NOT NULL,
+    fetched_at        DOUBLE PRECISION NOT NULL,
+    -- Three columns, matching SQLite and the live database: an artist's
+    -- specific genre maps to several broad genres, and artist_classifier
+    -- upserts with ON CONFLICT(artist_normalized, genre, broad_genre), which
+    -- needs a unique constraint over exactly those columns.
+    PRIMARY KEY (artist_normalized, genre, broad_genre)
+);
+CREATE INDEX IF NOT EXISTS idx_artist_genres_broad ON artist_genres (broad_genre);
+CREATE INDEX IF NOT EXISTS idx_artist_genres_artist ON artist_genres (artist_normalized);
+
+CREATE TABLE IF NOT EXISTS radio_sessions (
+    session_id    SERIAL PRIMARY KEY,
+    started_at    DOUBLE PRECISION NOT NULL,
+    ended_at      DOUBLE PRECISION,
+    source        TEXT NOT NULL DEFAULT 'mic',
+    is_recording  INTEGER NOT NULL DEFAULT 0,
+    recording_id  INTEGER REFERENCES recordings(recording_id) ON DELETE SET NULL,
+    track_count   INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'active',
+    notes         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_radio_sessions_started ON radio_sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_radio_sessions_status ON radio_sessions(status);
+
+CREATE TABLE IF NOT EXISTS radio_session_tracks (
+    id                 SERIAL PRIMARY KEY,
+    session_id         INTEGER NOT NULL,
+    artist             TEXT NOT NULL,
+    title              TEXT NOT NULL,
+    first_seen_at      DOUBLE PRECISION NOT NULL,
+    last_seen_at       DOUBLE PRECISION NOT NULL,
+    play_count         INTEGER NOT NULL DEFAULT 1,
+    offset_s           REAL,
+    has_synced_lyrics  INTEGER NOT NULL DEFAULT 0,
+    lyric_source       TEXT DEFAULT '',
+    imported           INTEGER NOT NULL DEFAULT 0,
+    imported_track_id  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_radio_session_tracks_sess ON radio_session_tracks(session_id);
+CREATE INDEX IF NOT EXISTS idx_radio_session_tracks_artist_title ON radio_session_tracks(artist, title);
+
+CREATE TABLE IF NOT EXISTS queue_events (
+    id           SERIAL PRIMARY KEY,
+    ts           DOUBLE PRECISION NOT NULL,
+    event_type   TEXT NOT NULL,
+    track_id     INTEGER,
+    artist       TEXT DEFAULT '',
+    title        TEXT DEFAULT '',
+    queue_index  INTEGER DEFAULT 0,
+    payload_json TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_queue_events_ts ON queue_events(ts);
+
+-- Unified append-only event log (see karaoke.event_store). Not migrated from
+-- SQLite -- it has no SQLite counterpart. Populate it from the legacy tables
+-- with scripts/backfill_event_store.py after this migration runs.
+CREATE TABLE IF NOT EXISTS events (
+    seq            BIGSERIAL    NOT NULL,
+    event_id       UUID         PRIMARY KEY,
+    aggregate_type TEXT         NOT NULL,
+    aggregate_id   TEXT         NOT NULL,
+    event_type     TEXT         NOT NULL,
+    payload        JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    published_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_events_aggregate ON events (aggregate_type, aggregate_id, seq);
+CREATE INDEX IF NOT EXISTS idx_events_type_created ON events (event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_unpublished ON events (seq) WHERE published_at IS NULL;
 """
 
 TABLES = [
@@ -263,6 +372,13 @@ TABLES = [
     ("track_genre", None),
     ("track_tone", None),
     ("track_analysis_history", "history_id"),
+    ("saved_searches", None),
+    ("saved_playlists", None),
+    ("saved_playlist_tracks", None),
+    ("artist_genres", None),
+    ("radio_sessions", "session_id"),
+    ("radio_session_tracks", "id"),
+    ("queue_events", "id"),
 ]
 
 def clean_postgres_string(val):
@@ -281,7 +397,7 @@ def main():
     print("Connecting to databases...")
     sqlite_conn = sqlite3.connect(sqlite_db)
     sqlite_conn.row_factory = sqlite3.Row
-    pg_conn = psycopg2.connect(pg_url)
+    pg_conn = psycopg.connect(pg_url)
 
     try:
         # Get set of valid parent keys to prevent foreign key violations on orphan SQLite rows

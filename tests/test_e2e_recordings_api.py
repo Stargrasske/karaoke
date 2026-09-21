@@ -56,7 +56,7 @@ def test_db_and_recording(tmp_path, monkeypatch):
     cur.execute(
         """
         INSERT INTO recordings (recording_id, started_at, ended_at, status, source, dir, keep_audio, note)
-        VALUES (99, ?, ?, 'complete', 'alsa_output.pci-0000_00_1f.3.analog-stereo.monitor', ?, 1, 'Initial e2e session note')
+        VALUES (99, %s, %s, 'complete', 'alsa_output.pci-0000_00_1f.3.analog-stereo.monitor', %s, 1, 'Initial e2e session note')
         """,
         (now - 300, now, str(recording_dir)),
     )
@@ -65,11 +65,11 @@ def test_db_and_recording(tmp_path, monkeypatch):
     cur.execute(
         """
         INSERT INTO recording_marks (recording_id, artist, title, at_wall, at_mono, at_offset, ok)
-        VALUES 
-            (99, 'Swans', 'A Little God In My Hands', ?, 10.0, 5.0, 1),
-            (99, 'Swans', 'A Little God In My Hands', ?, 20.0, 15.0, 1),
-            (99, 'Portishead', 'Glory Box', ?, 60.0, 5.0, 1),
-            (99, 'Portishead', 'Glory Box', ?, 70.0, 15.0, 1)
+        VALUES
+            (99, 'Swans', 'A Little God In My Hands', %s, 10.0, 5.0, 1),
+            (99, 'Swans', 'A Little God In My Hands', %s, 20.0, 15.0, 1),
+            (99, 'Portishead', 'Glory Box', %s, 60.0, 5.0, 1),
+            (99, 'Portishead', 'Glory Box', %s, 70.0, 15.0, 1)
         """,
         (now - 290, now - 280, now - 200, now - 190),
     )

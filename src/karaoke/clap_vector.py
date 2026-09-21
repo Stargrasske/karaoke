@@ -48,6 +48,22 @@ SAMPLE_RATE = 48000
 WINDOW_SECONDS = 10
 MAX_WINDOWS = 6
 
+# Sample the body of the track, not its edges. Spreading windows across the
+# whole file still puts one of them at sample 0, and measured against real
+# tracks that opening window is often a different sound entirely -- cosine
+# 0.55 and 0.62 against the rest of the song on two of four sampled files,
+# which is a fade-in or a count-in rather than the music. An outro fade is the
+# same problem at the other end. Both would otherwise carry a full 1/6 of the
+# pooled vector.
+#
+# Trimmed as a fraction rather than a fixed number of seconds because intros
+# scale with the track: a 90-second punk song does not get a 20-second intro.
+EDGE_TRIM = 0.06
+
+# Below this a track has no body worth trimming -- an interlude or a jingle is
+# mostly edges -- so it is embedded whole rather than cut down to nothing.
+MIN_TRIM_SECONDS = 45
+
 # What similarity means here, measured over 60 library tracks:
 #     p5 +0.589   median +0.779   p95 +0.909
 # Well spread compared with the spectral vector's 0.885-0.987, so a score can
@@ -126,12 +142,54 @@ def _normalise(vector) -> list[float]:
     return [float(x) for x in (v / norm if norm else v)]
 
 
-def embed_audio(audio_path: str) -> Optional[list[float]]:
+def _body_windows(y, max_windows: int = MAX_WINDOWS, *, full: bool = False) -> list:
+    """Even windows across the track's body, skipping intro and outro.
+
+    Separated out so the windowing can be tested and compared without loading
+    a model: what a vector means depends entirely on which audio went into it,
+    so two vectors built under different windowing are not comparable and the
+    whole index has to be rebuilt when this changes.
+
+    ``full`` tiles the body end to end instead of sampling it, so nothing is
+    skipped. Six ten-second windows cover about a quarter of a four-minute
+    track, which is ample for timbre -- the thing CLAP describes -- but a
+    caller wanting every second can ask. Cost scales with the window count,
+    since each one is a forward pass.
+    """
+    total = len(y)
+    span = SAMPLE_RATE * WINDOW_SECONDS
+
+    start, end = 0, total
+    if total >= SAMPLE_RATE * MIN_TRIM_SECONDS:
+        trim = int(total * EDGE_TRIM)
+        start, end = trim, total - trim
+
+    body = y[start:end]
+    if len(body) < span:
+        # Trimming left less than one window; the edges are all there is.
+        body = y
+
+    if full:
+        windows = [body[i:i + span] for i in range(0, len(body), span)]
+    else:
+        count = max(1, max_windows)
+        step = max(1, len(body) // count)
+        windows = [body[i:i + span] for i in range(0, len(body), step)][:count]
+    return [w for w in windows if len(w) >= SAMPLE_RATE]
+
+
+def embed_audio(audio_path: str, *, max_windows: int = MAX_WINDOWS,
+                full: bool = False) -> Optional[list[float]]:
     """Embed a track, or None if it cannot be read.
 
     Windows are mean-pooled: a single ten-second slice describes a moment
     rather than a song, and a track that changes character would be
     represented by whichever part happened to be sampled.
+
+    ``max_windows`` and ``full`` control how much of the track is sampled.
+    Note that changing either produces vectors that are not comparable with
+    those already indexed, so it is a decision for a whole rebuild rather than
+    one track.
     """
     if not available():
         log.debug("CLAP unavailable; no audio embedding")
@@ -153,10 +211,7 @@ def embed_audio(audio_path: str) -> Optional[list[float]]:
         if y is None or len(y) < SAMPLE_RATE:
             return None
 
-        step = max(1, len(y) // MAX_WINDOWS)
-        windows = [y[i:i + SAMPLE_RATE * WINDOW_SECONDS]
-                   for i in range(0, len(y), step)][:MAX_WINDOWS]
-        windows = [w for w in windows if len(w) >= SAMPLE_RATE]
+        windows = _body_windows(y, max_windows, full=full)
         if not windows:
             return None
 
@@ -238,6 +293,49 @@ def doc_id(track_id: int) -> str:
     than a performance -- so re-running replaces.
     """
     return f"clap:{track_id}"
+
+
+def store(track_id: int, vector: list[float], *, artist: str = "", title: str = "",
+          album: str = "", detected_key: str = "", bpm: Optional[float] = None,
+          os_client: Any = None) -> bool:
+    """Index an embedding so it becomes searchable. Returns success.
+
+    Embedding is the expensive step -- decoding audio and running CLAP --
+    while indexing is a single small write. Both ingest paths used to compute
+    a vector, read a genre word off it and drop it, which is why a
+    whole-library pass produced ~13k genre labels and 246 searchable vectors.
+    Call this wherever a vector is produced.
+
+    Best-effort: a caller is generally part-way through a pipeline whose other
+    results (key, tempo, genre) must survive OpenSearch being unavailable, so
+    failure is logged and reported rather than raised.
+    """
+    from datetime import datetime, timezone
+
+    if not vector:
+        return False
+    try:
+        client = os_client
+        if client is None:
+            from .osclient import client as get_os_client
+
+            client = get_os_client()
+        if client is None:
+            return False
+        ensure_index(client)
+        client.index(
+            index=CLAP_INDEX,
+            id=doc_id(track_id),
+            body=build_doc(
+                track_id=track_id, artist=artist, title=title, album=album,
+                vector=vector, detected_key=detected_key, bpm=bpm,
+                embedded_at=datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        return True
+    except Exception:
+        log.debug("could not index CLAP vector for track %s", track_id, exc_info=True)
+        return False
 
 
 def build_doc(*, track_id: int, artist: str, title: str, vector: list[float],

@@ -9,8 +9,10 @@ This only ever *upgrades*: a track already carrying word tags is skipped, and
 the plain lyrics are preserved.
 """
 from __future__ import annotations
+import psycopg.rows
 
-import sqlite3
+import psycopg
+from psycopg import Connection, Cursor
 import time
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -50,8 +52,8 @@ def has_word_timings(synced: str) -> bool:
 
 
 def find_upgrade_candidates(
-    conn: sqlite3.Connection, limit: Optional[int] = None
-) -> list[sqlite3.Row]:
+    conn: Connection, limit: Optional[int] = None
+) -> list[dict]:
     """Approved tracks with a YouTube source and line-level-only synced lyrics."""
     rows = list(conn.execute(
         """
@@ -69,8 +71,8 @@ def find_upgrade_candidates(
 
 
 def upgrade_track(
-    row: sqlite3.Row,
-    conn: sqlite3.Connection,
+    row: dict,
+    conn: Connection,
     *,
     dry_run: bool = False,
     delay: float = 0.0,
@@ -119,6 +121,11 @@ def upgrade_track(
         base.status = "no-captions"
         base.detail = avail.describe()
         return base
+        
+    if avail.best.kind == "automatic" and row.get("synced_lyrics"):
+        base.status = "no-captions"
+        base.detail = "automatic captions rejected"
+        return base
 
     # Authenticate timedtext request with cookies from the ydl cookiejar and real browser headers
     cookie_dict = {}
@@ -157,6 +164,14 @@ def upgrade_track(
         base.status = "no-captions"
         base.detail = "captions carried no word timings"
         return base
+        
+    existing = row.get("synced_lyrics")
+    if existing:
+        old_lines = len(existing.strip().split("\n"))
+        if len(lines) < old_lines * 0.5:
+            base.status = "no-captions"
+            base.detail = "incomplete captions"
+            return base
 
     base.status = "upgraded"
     if dry_run:
@@ -181,7 +196,7 @@ def upgrade_all(
     limit: Optional[int] = None,
     dry_run: bool = False,
     delay: float = DEFAULT_DELAY_S,
-    conn: Optional[sqlite3.Connection] = None,
+    conn: Optional[Connection] = None,
     cookies_from_browser: Optional[str] = None,
     cookies_file: Optional[str] = None,
     progress: bool = True,
@@ -189,7 +204,7 @@ def upgrade_all(
     """Upgrade every eligible cached track, stopping cleanly on rate limiting."""
     own = conn is None
     c = conn or localcache.connect()
-    c.row_factory = sqlite3.Row
+    c.row_factory = psycopg.rows.dict_row
     results: list[UpgradeResult] = []
     try:
         candidates = find_upgrade_candidates(c, limit)

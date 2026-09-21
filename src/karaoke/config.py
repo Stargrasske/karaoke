@@ -92,9 +92,11 @@ class Settings:
             kube_context=os.environ.get("KUBE_CONTEXT", "kind-karaoke"),
             data_dir=Path(os.environ.get("KARAOKE_DATA_DIR", str(default_data))).expanduser(),
             yt_cache_max_mb=int(os.environ.get("KARAOKE_YT_CACHE_MAX_MB", "500")),
-            # Backend selector for bigger collections. Default 'sqlite' (WAL,
-            # indexed) is the only fully-wired backend today; 'postgres' is a
-            # planned backend — see docs/database.md.
+            # VESTIGIAL: the backend is no longer selectable. localcache cut
+            # over to Postgres unconditionally and reads KARAOKE_PG_URL
+            # directly; nothing in the connection path consults these two
+            # settings. Kept only so existing imports of settings.db_backend /
+            # settings.db_url keep resolving — see docs/database.md.
             db_backend=os.environ.get("KARAOKE_DB_BACKEND", "sqlite"),
             db_url=os.environ.get("KARAOKE_DB_URL", ""),
         )

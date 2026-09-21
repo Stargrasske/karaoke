@@ -26,12 +26,12 @@ def db(tmp_path, monkeypatch):
     conn = _real_connect(db_path)
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO tracks (artist, title, album, duration) VALUES (?, ?, ?, ?)",
+        "INSERT INTO tracks (artist, title, album, duration) VALUES (%s, %s, %s, %s) RETURNING track_id",
         ("Radiohead", "Creep", "Pablo Honey", 238.0),
     )
-    track_id = cur.lastrowid
+    track_id = cur.fetchone()["track_id"]
     cur.execute(
-        "INSERT INTO sources (track_id, url, kind) VALUES (?, ?, ?)",
+        "INSERT INTO sources (track_id, url, kind) VALUES (%s, %s, %s)",
         (track_id, "https://youtu.be/XFkzRNyygfk", "youtube"),
     )
     conn.commit()
@@ -76,7 +76,7 @@ def test_list_tracks_search_filter(db, client):
 def test_list_tracks_genre_filter(db, client):
     db_path, track_id = db
     conn = localcache.connect(db_path)
-    conn.execute("INSERT INTO track_genre (track_id, genre, score, labelled_at) VALUES (?, ?, ?, 1)", (track_id, "alternative", 0.9))
+    conn.execute("INSERT INTO track_genre (track_id, genre, score, labelled_at) VALUES (%s, %s, %s, 1)", (track_id, "alternative", 0.9))
     conn.commit()
     conn.close()
 

@@ -176,7 +176,7 @@ def artist_used_elsewhere(conn, artist: str, track_id: int) -> bool:
     tracks here is an artist, and that row is not swapped.
     """
     row = conn.execute(
-        "SELECT count(*) n FROM tracks WHERE artist = ? AND track_id != ?",
+        "SELECT count(*) n FROM tracks WHERE artist = %s AND track_id != %s",
         (artist, track_id)).fetchone()
     return bool(row and int(row["n"]) > 0)
 

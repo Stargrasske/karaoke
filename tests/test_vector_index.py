@@ -116,6 +116,8 @@ def test_rebuild_from_sqlite_indexes_tracks_and_lines(tmp_path):
     assert line_mapping["context"]["search_analyzer"] == "synonym_analyzer"
 
 
+
+
 def test_rebuild_batches_writes_into_bulk_requests(tmp_path):
     """All docs for a small library go out in a single _bulk call, not per-doc."""
     db = tmp_path / "karaoke.db"

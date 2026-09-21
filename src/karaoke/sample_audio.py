@@ -181,6 +181,30 @@ def capture(seconds: float = DEFAULT_SECONDS, *, dest: Optional[Path] = None,
     return Sample(path=target, seconds=seconds, source=src)
 
 
+def _index_clap_vector(track_id: int, vector: list, conn) -> bool:
+    """Store an embedding in the CLAP index so it becomes searchable."""
+    from . import clap_vector
+
+    meta = {}
+    try:
+        row = conn.execute(
+            "SELECT t.artist, t.title, t.album, a.detected_key, a.bpm"
+            " FROM tracks t LEFT JOIN track_analysis a ON a.track_id = t.track_id"
+            " WHERE t.track_id = %s",
+            (track_id,),
+        ).fetchone()
+        meta = dict(row) if row else {}
+    except Exception:
+        pass
+
+    return clap_vector.store(
+        track_id, vector,
+        artist=meta.get("artist") or "", title=meta.get("title") or "",
+        album=meta.get("album") or "",
+        detected_key=meta.get("detected_key") or "", bpm=meta.get("bpm"),
+    )
+
+
 def _label_genre(track_id: int, wav_path, conn) -> bool:
     """Label the sampled excerpt's genre, if CLAP is available.
 
@@ -201,9 +225,18 @@ def _label_genre(track_id: int, wav_path, conn) -> bool:
         vector = clap_vector.embed_audio(str(wav_path))
         if vector is None:
             return False
+        # Keep the embedding. Computing it is the whole cost here -- decoding
+        # the audio and running CLAP -- while classifying and indexing are
+        # nearly free. This used to discard the vector after reading a genre
+        # word off it, so a full-library labelling pass left 13k labels and
+        # almost no searchable vectors, and the audio it was derived from is
+        # often gone by the time anyone notices.
+        _index_clap_vector(track_id, vector, conn)
+
         verdict = genre.classify(vector, genre.label_vectors())
         if verdict is None:
             log.info("sample for track %s matched no genre label", track_id)
+            # The vector is still worth having even when no label fits.
             return False
         localcache.ensure_genre_table(conn)
         localcache.record_genre(track_id, verdict, conn,
