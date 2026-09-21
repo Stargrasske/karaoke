@@ -51,20 +51,16 @@ CONFIRM_WINDOWS = 2
 #: Below this the window's own vote is too weak to reason about.
 MIN_CONFIDENCE = 0.55
 
-#: Intervals, in semitones, that read as fifth-related movement between key
-#: centres. Note this is *key* movement, not the chord-level ii-V motion that
-#: characterises jazz -- a ii-V-I does not change the key, so it is invisible
-#: here by construction. See :mod:`karaoke.chords` for that.
+#: Intervals, in semitones, between key centres a fifth apart. Used to
+#: classify a transition's kind; it no longer drives a form label, because a
+#: ii-V-I does not change the key and so fifth motion is invisible at this
+#: level by construction. See :mod:`karaoke.chords`.
 FIFTHS = {5, 7}
 
 #: Degrees of the home key whose chords a window can mistake for a key centre:
 #: the tonic itself (a move *back* home is a return, not a modulation) plus
 #: IV, V, vi and ii -- the chords a I-IV-V song or a blues actually sits on.
 DIATONIC_DEGREES = {0, 2, 5, 7, 9}
-
-#: Non-diatonic, non-returning moves needed before a track counts as really
-#: travelling rather than leaning on a neighbouring chord.
-TRAVEL_MOVES = 2
 
 
 @dataclass
@@ -258,7 +254,6 @@ NON_MODULATION = ("parallel", "relative", "diatonic")
 def _form_of(prog: "Progression") -> str:
     """A coarse label for the harmonic shape."""
     real = [t for t in prog.transitions if t.kind not in NON_MODULATION]
-    fifths = [t for t in real if t.kind == "fifth"]
 
     if not real:
         if any(t.kind == "diatonic" for t in prog.transitions):
@@ -277,13 +272,13 @@ def _form_of(prog: "Progression") -> str:
     if _oscillating(real):
         return "oscillating"
 
-    if len(fifths) >= TRAVEL_MOVES and len(fifths) >= len(real) / 2:
-        # Key centres a fifth apart, travelling rather than returning. Named
-        # for what it measures: this was called "circle-of-fifths" and could
-        # never fire, because every ii-V-I lands on a degree of the home key
-        # and is filtered as diatonic. Across 13 jazz tracks it matched zero
-        # times. Chord-level fifth motion lives in karaoke.chords.
-        return "fifth-related"
+    # There used to be a "fifth-related" label here, for key centres a fifth
+    # apart. Measured across 5292 tracks it fired 48 times, and the artists
+    # with the most actual fifth motion at chord level -- Ween at 28.5%, John
+    # Cale and Lou Reed at 30.0% -- came out among the harmonically *simplest*
+    # by vocabulary. The two measures contradicted each other, so the label
+    # was describing noise. Fifth motion is a chord-level property and lives
+    # in karaoke.chords, where it separates Bill Evans from The Strokes.
     if prog.changes_per_minute >= 1.5:
         return "restless"
     return "modulating"
