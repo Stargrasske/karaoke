@@ -27,6 +27,10 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
+          # The package lives under src/ and is not installed in the docs
+          # environment; without this, a build outside the project venv
+          # cannot resolve `karaoke` and --strict aborts on the first module.
+          paths: [src]
           options:
             show_source: false
   - mermaid2:
