@@ -279,7 +279,11 @@ CREATE TABLE IF NOT EXISTS artist_genres (
     weight            REAL NOT NULL DEFAULT 1.0,
     source            TEXT NOT NULL,
     fetched_at        DOUBLE PRECISION NOT NULL,
-    PRIMARY KEY (artist_normalized, genre)
+    -- Three columns, matching SQLite and the live database: an artist's
+    -- specific genre maps to several broad genres, and artist_classifier
+    -- upserts with ON CONFLICT(artist_normalized, genre, broad_genre), which
+    -- needs a unique constraint over exactly those columns.
+    PRIMARY KEY (artist_normalized, genre, broad_genre)
 );
 CREATE INDEX IF NOT EXISTS idx_artist_genres_broad ON artist_genres (broad_genre);
 CREATE INDEX IF NOT EXISTS idx_artist_genres_artist ON artist_genres (artist_normalized);
