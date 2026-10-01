@@ -1,6 +1,7 @@
 ---
 name: spotify-auth
 description: How karaoke authenticates to Spotify and YouTube, and the quota rules for the Spotify Web API. Use when touching spotify_client, adding Spotify API calls, debugging a 429/auth failure, or when playback is signed out.
+user-invocable: true
 ---
 
 # Spotify and playback auth

@@ -56,6 +56,48 @@ waits for each service to become healthy and stops the complete process tree on
 Ctrl+C. Open `http://localhost:4200` for the dashboard. Use `--no-control` or
 `--no-web` when working on only part of the stack.
 
+### Common run commands
+
+On Windows, the VS Code **Run** button exposes these tasks:
+
+- **Karaoke: Start all (kind + FastAPI + Angular)** builds and deploys the
+  library API, PostgreSQL and RabbitMQ to the existing `kind-karaoke` cluster,
+  then starts the local FastAPI APIs and Angular dashboard.
+- **Karaoke: Deploy Docker/kind services** performs only the cluster deployment.
+- **Karaoke: Start local FastAPI + Angular** starts the local development stack
+  without changing Kubernetes resources.
+- **Karaoke: Build Angular** builds the dashboard.
+- **Karaoke: Test Angular (headless)** runs the browser-based Angular unit tests.
+- **Karaoke: Run full Python suite (clears karaoke_test data)** runs the complete
+  pytest suite against the configured test database.
+- **Karaoke: Run isolated Python regression tests** runs focused tests without
+  loading the shared database fixture.
+
+The equivalent commands from the repository root are:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\dev.py --with-kind
+.\.venv\Scripts\python.exe scripts\dev.py --deploy-kind
+.\.venv\Scripts\python.exe scripts\dev.py
+Push-Location web; npm run build; Pop-Location
+Push-Location web; npm run test -- --watch=false --browsers=ChromeHeadless; Pop-Location
+.\.venv\Scripts\python.exe -m pytest --noconftest -p no:cacheprovider tests\test_recording_discard_analyse.py tests\test_api_client.py
+.\.venv\Scripts\python.exe -m pytest -v
+```
+
+The kind commands require Docker Desktop, `kind`, and `kubectl`, and refuse
+Kubernetes contexts that do not start with `kind-`. They create/update the
+PostgreSQL schema from the migration source and preserve the database PVC; a
+new database starts empty, and no library data is seeded. With `--with-kind`,
+the launcher forwards PostgreSQL on port 5432 for the local APIs. Set
+`KARAOKE_PG_URL` to use a different database/port-forward.
+
+The full Python suite (`python -m pytest`) uses `tests/conftest.py`, which
+deletes all rows and resets sequences in the configured test database before
+each test. Run it only against a disposable, isolated `karaoke_test` database;
+the full-suite task is intentionally labelled to make this data-clearing
+behavior visible.
+
 Python 3.11 or newer and Node.js/npm are required. OpenSearch, RabbitMQ, Docker,
 and pre-seeded data are optional for the first view. On Windows, recording uses
 an ffmpeg DirectShow microphone; automatic `songrec` identification remains
@@ -259,5 +301,3 @@ This is a one-shot lookup; if the song changes, re-run the command. It's a
 convenient way to avoid typing the artist and title for a song already playing
 on your desktop. You may need to `emerge media-sound/playerctl` if it's not
 already installed.
-
-

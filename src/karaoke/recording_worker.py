@@ -316,22 +316,54 @@ def load_recording(recording_id: int, conn=None) -> Optional[dict]:
             c.close()
 
 
+class DiscardError(RuntimeError):
+    """Some of a recording's audio could not be deleted.
+
+    ``freed`` counts only the files that were actually unlinked; ``remaining``
+    lists the audio still on disk. The recording's status is left untouched.
+    """
+
+    def __init__(self, recording_id: int, freed: int,
+                 remaining: list[Path], errors: list[str]):
+        self.recording_id = recording_id
+        self.freed = freed
+        self.remaining = remaining
+        self.errors = errors
+        detail = "; ".join(errors) if errors else ", ".join(str(p) for p in remaining)
+        super().__init__(
+            f"recording {recording_id}: {len(remaining)} audio file(s) could "
+            f"not be deleted ({detail})")
+
+
 def discard_audio(recording_id: int, *, conn=None) -> int:
-    """Delete a recording's audio, keeping its markers. Returns bytes freed."""
+    """Delete a recording's audio, keeping its markers. Returns bytes freed.
+
+    Raises :class:`DiscardError` if any audio is left on disk; the recording
+    is only marked ``discarded`` once its audio is really gone.
+    """
     record = load_recording(recording_id, conn)
     if not record:
         return 0
     directory = Path(record["dir"])
     freed = 0
+    errors: list[str] = []
     for path in directory.glob("seg-*.flac"):
         try:
-            freed += path.stat().st_size
+            size = path.stat().st_size
             path.unlink()
-        except OSError:
-            pass
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        freed += size
+    remaining = sorted(directory.glob("seg-*.flac"))
+    if errors or remaining:
+        raise DiscardError(recording_id, freed, remaining, errors)
     try:
         directory.rmdir()
     except OSError:
+        # The audio is gone; a missing or non-empty directory is not audio.
         pass
     own = conn is None
     c = conn or localcache.connect()
@@ -389,7 +421,14 @@ def prune_recordings(*, retain_days: float = RETAIN_DAYS,
             if record["keep_audio"]:
                 continue
             if float(record["started_at"] or 0.0) < cutoff:
-                freed = discard_audio(int(record["recording_id"]), conn=c)
+                try:
+                    freed = discard_audio(int(record["recording_id"]), conn=c)
+                except DiscardError as exc:
+                    notes.append(f"  FAILED to prune recording "
+                                 f"{record['recording_id']}: {exc}")
+                    live = [(r, n - exc.freed if r is record else n)
+                            for r, n in live]
+                    continue
                 notes.append(f"  pruned recording {record['recording_id']}: "
                              f"{freed / 1e6:.0f} MB, older than "
                              f"{retain_days:.0f} days")
@@ -402,7 +441,13 @@ def prune_recordings(*, retain_days: float = RETAIN_DAYS,
         for record, size in list(live):
             if total <= max_bytes:
                 break
-            freed = discard_audio(int(record["recording_id"]), conn=c)
+            try:
+                freed = discard_audio(int(record["recording_id"]), conn=c)
+            except DiscardError as exc:
+                total -= exc.freed
+                notes.append(f"  FAILED to prune recording "
+                             f"{record['recording_id']}: {exc}")
+                continue
             total -= freed
             notes.append(f"  pruned recording {record['recording_id']}: "
                          f"{freed / 1e6:.0f} MB, over the "
@@ -578,6 +623,18 @@ def recording_main(argv: Optional[list[str]] = None) -> int:
     if args.discard is not None:
         from .api_client import ApiClient
         res = ApiClient().record_discard_audio(args.discard)
+        if res.get("status") == "error":
+            import json
+            import sys
+            detail = res.get("detail")
+            if isinstance(detail, dict):
+                msg = detail.get("message") or json.dumps(detail)
+                if detail.get("freed_bytes"):
+                    msg += f" (freed {detail['freed_bytes'] / 1e6:.0f} MB before failing)"
+            else:
+                msg = detail or f"HTTP {res.get('http_status')}"
+            print(f"recording {args.discard}: discard failed: {msg}", file=sys.stderr)
+            return 1
         freed = res.get("freed_bytes")
         if freed is not None:
             print(f"freed {freed / 1e6:.0f} MB")

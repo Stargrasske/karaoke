@@ -25,6 +25,6 @@ uvicorn[standard]>=0.28.0
 pika
 celery>=5.4
 flower>=2.0
+mcp>=1.0.0
 sqlalchemy>=2.0
 ytmusicapi>=1.12.0
-

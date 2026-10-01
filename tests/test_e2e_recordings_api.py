@@ -218,10 +218,17 @@ def test_e2e_api_client_recording_integration(test_db_and_recording, lib_client,
         resp = c.post(path, json=body)
         return resp.json() if resp.status_code == 200 else None
 
-    def fake_delete(base, path):
+    def fake_delete(base, path, *, http_errors=False):
+        # Mirrors ApiClient._http_delete: error responses are only surfaced
+        # when the caller opts in; otherwise they read as "unreachable".
         c = ctrl_client if base == client.ctrl_url else lib_client
         resp = c.delete(path)
-        return resp.json() if resp.status_code == 200 else None
+        if resp.status_code == 200:
+            return resp.json()
+        if http_errors:
+            return {"status": "error", "http_status": resp.status_code,
+                    "detail": resp.json().get("detail")}
+        return None
 
     with patch.object(client, "_http_get", side_effect=fake_get), \
          patch.object(client, "_http_patch", side_effect=fake_patch), \

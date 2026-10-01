@@ -2123,7 +2123,7 @@ def get_saved_searches(
             SELECT query, result_count, created_at, last_used_at, use_count
             FROM saved_searches
             ORDER BY last_used_at DESC, use_count DESC
-            LIMIT ?
+            LIMIT %s
             """,
             (limit,),
         ).fetchall()
@@ -2729,6 +2729,5 @@ def mark_radio_track_imported(
     finally:
         if own:
             c.close()
-
 
 

@@ -35,6 +35,22 @@ def _ctrl_api_url() -> str:
     return f"http://{host}:{port}"
 
 
+def _http_error_result(exc: urllib.error.HTTPError) -> dict[str, Any]:
+    """An error response as a result dict, keeping the server's ``detail``."""
+    try:
+        body = exc.read().decode("utf-8", "replace")
+    except Exception:
+        body = ""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        # Not JSON (e.g. a proxy's HTML page): keep it short and readable.
+        detail: Any = body.strip()[:500] or exc.reason
+    else:
+        detail = parsed.get("detail", parsed) if isinstance(parsed, dict) else parsed
+    return {"status": "error", "http_status": exc.code, "detail": detail}
+
+
 def _clean_params(params: dict[str, Any]) -> dict[str, str]:
     return {k: str(v).lower() if isinstance(v, bool) else str(v)
             for k, v in params.items() if v is not None}
@@ -92,12 +108,24 @@ class ApiClient:
             log.debug("HTTP PATCH %s failed: %s", url, exc)
             return None
 
-    def _http_delete(self, base_url: str, path: str) -> Optional[dict[str, Any]]:
+    def _http_delete(self, base_url: str, path: str, *,
+                     http_errors: bool = False) -> Optional[dict[str, Any]]:
+        """DELETE ``path``; ``None`` means the server could not be reached.
+
+        With ``http_errors``, an error *response* (4xx/5xx) is returned as
+        ``{"status": "error", "http_status", "detail"}`` instead of ``None``,
+        so callers can tell "the server refused" from "no server".
+        """
         url = f"{base_url}{path}"
         try:
             req = urllib.request.Request(url, method="DELETE")
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            log.debug("HTTP DELETE %s failed: %s", url, exc)
+            if not http_errors:
+                return None
+            return _http_error_result(exc)
         except Exception as exc:
             log.debug("HTTP DELETE %s failed: %s", url, exc)
             return None
@@ -463,12 +491,22 @@ class ApiClient:
         return {"status": "unreachable"}
 
     def record_discard_audio(self, recording_id: int) -> dict[str, Any]:
-        res = self._http_delete(self.ctrl_url, f"/api/recordings/{recording_id}/audio")
+        res = self._http_delete(self.ctrl_url, f"/api/recordings/{recording_id}/audio",
+                                http_errors=True)
         if res is not None:
+            # Includes error responses: the server answered, so retrying the
+            # same delete in-process would only repeat (or contradict) it.
+            if res.get("status") == "error":
+                res.setdefault("recording_id", recording_id)
             return res
         if self.fallback_local:
+            from fastapi import HTTPException
             from .ctrl_api import record_discard
-            return record_discard(recording_id)
+            try:
+                return record_discard(recording_id)
+            except HTTPException as exc:
+                return {"status": "error", "http_status": exc.status_code,
+                        "detail": exc.detail, "recording_id": recording_id}
         return {"status": "unreachable"}
 
     def sample(self, artist: Optional[str] = None, title: Optional[str] = None, seconds: Optional[float] = None) -> dict[str, Any]:

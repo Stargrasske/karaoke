@@ -425,16 +425,14 @@ def record_analyse(recording_id: int, background: BackgroundTasks,
         raise HTTPException(status_code=409,
                             detail="Recording is still capturing; stop it first")
 
-    job_id = jobs.create_job()
-    background.add_task(jobs.run_job, job_id, recording_worker.analyse, recording_id,
-                        keep=True if keep else None)
-    return {"status": "accepted", "recording_id": recording_id, "job_id": job_id}
     # Retention is no longer a side effect of analysing: a caller asking to
     # decompile one session should not silently drop another past the age or
-    # size cap. `keep` is accepted and ignored; it is now the default.
-    background.add_task(recording_worker.analyse, recording_id,
+    # size cap, so the sweep only runs on ``prune_after``. ``keep`` is
+    # accepted for old clients and ignored; keeping the audio is the default.
+    job_id = jobs.create_job()
+    background.add_task(jobs.run_job, job_id, recording_worker.analyse, recording_id,
                         prune_after=prune_after)
-    return {"status": "accepted", "recording_id": recording_id}
+    return {"status": "accepted", "recording_id": recording_id, "job_id": job_id}
 
 
 @app.delete("/api/recordings/{recording_id}/audio")
@@ -447,7 +445,15 @@ def record_discard(recording_id: int) -> dict[str, Any]:
     if recorder.is_running(recording_id):
         raise HTTPException(status_code=409,
                             detail="Recording is still capturing; stop it first")
-    freed = recording_worker.discard_audio(recording_id)
+    try:
+        freed = recording_worker.discard_audio(recording_id)
+    except recording_worker.DiscardError as exc:
+        raise HTTPException(status_code=500, detail={
+            "recording_id": recording_id,
+            "message": str(exc),
+            "freed_bytes": exc.freed,
+            "remaining": [str(p) for p in exc.remaining],
+        })
     return {"status": "discarded", "recording_id": recording_id,
             "freed_bytes": freed}
 

@@ -1,0 +1,71 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Karaoke: Start all (kind + FastAPI + Angular)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["scripts/dev.py", "--with-kind"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "inAgents": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Karaoke: Deploy Docker/kind services",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["scripts/dev.py", "--deploy-kind"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "inAgents": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Karaoke: Start local FastAPI + Angular",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["scripts/dev.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "inAgents": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Karaoke: Build Angular",
+      "type": "process",
+      "command": "npm.cmd",
+      "args": ["run", "build"],
+      "options": { "cwd": "${workspaceFolder}\\web" },
+      "inAgents": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Karaoke: Test Angular (headless)",
+      "type": "process",
+      "command": "npm.cmd",
+      "args": ["run", "test", "--", "--watch=false", "--browsers=ChromeHeadless"],
+      "options": { "cwd": "${workspaceFolder}\\web" },
+      "inAgents": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Karaoke: Run full Python suite (clears karaoke_test data)",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "pytest", "-v"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "inAgents": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Karaoke: Run isolated Python regression tests",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m", "pytest", "--noconftest", "-p", "no:cacheprovider",
+        "tests/test_recording_discard_analyse.py", "tests/test_api_client.py"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "inAgents": true,
+      "problemMatcher": []
+    }
+  ]
+}

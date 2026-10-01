@@ -4,6 +4,7 @@ description: >-
   Maintains, syncs, and audits project documentation, API references (mkdocstrings),
   MkDocs site navigation, and Makefile targets. Use when updating docs after code changes,
   resolving documentation drift, or running docs verification pipelines.
+user-invocable: true
 ---
 
 # Documentation Maintainer Runbook (`doc-maintainer`)

@@ -123,6 +123,12 @@ POST   /api/recordings/{id}/analyse      decompile a recording into the DB
 DELETE /api/recordings/{id}/audio        drop audio, keep markers
 ```
 
+`POST /api/recordings/{id}/analyse` takes `?prune_after=true` to run the
+retention sweep afterwards; `keep` is still accepted but ignored (audio is
+always kept). If any audio file cannot be deleted, `DELETE .../audio` returns
+500 with `detail: {recording_id, message, freed_bytes, remaining}` and the
+recording is not marked `discarded`.
+
 `GET /api/sample/stream?artist=A&title=B&seconds=45` streams Server-Sent Events:
 
 ```
